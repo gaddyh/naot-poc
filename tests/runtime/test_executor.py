@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+from naot_poc.observability import InMemoryEventSink
 from naot_poc.runtime.context import RunContext
 from naot_poc.runtime.executor import execute
 
@@ -196,7 +197,7 @@ async def test_execute_runs_async_operation():
 
 
 async def test_execute_times_out_and_retries():
-    sink = RecordingEventSink()
+    sink = InMemoryEventSink()
     context = RunContext(run_id="run-timeout", operation_name="barcode_scan")
     calls = 0
 
@@ -232,21 +233,8 @@ async def test_execute_times_out_and_retries():
     assert retrying.attributes["error_type"] == "TimeoutError"
 
 
-from naot_poc.runtime.context import RunContext
-from naot_poc.runtime.events import RuntimeEvent
-from naot_poc.runtime.executor import execute
-
-
-class RecordingEventSink:
-    def __init__(self) -> None:
-        self.events: list[RuntimeEvent] = []
-
-    def emit(self, event: RuntimeEvent) -> None:
-        self.events.append(event)
-
-
 async def test_execute_emits_started_and_succeeded_events():
-    sink = RecordingEventSink()
+    sink = InMemoryEventSink()
     context = RunContext(run_id="run-123", operation_name="barcode_scan")
 
     result = await execute(
@@ -274,23 +262,8 @@ async def test_execute_emits_started_and_succeeded_events():
     assert succeeded.attributes["duration_ms"] >= 0
 
 
-from naot_poc.runtime.context import RunContext
-from naot_poc.runtime.errors import RetryableError
-from naot_poc.runtime.events import RuntimeEvent
-from naot_poc.runtime.executor import execute
-from naot_poc.runtime.policy import ExecutionPolicy
-
-
-class RecordingEventSink:
-    def __init__(self) -> None:
-        self.events: list[RuntimeEvent] = []
-
-    def emit(self, event: RuntimeEvent) -> None:
-        self.events.append(event)
-
-
 async def test_execute_emits_retrying_event():
-    sink = RecordingEventSink()
+    sink = InMemoryEventSink()
     context = RunContext(run_id="run-123", operation_name="barcode_scan")
 
     attempts = 0
@@ -336,7 +309,7 @@ async def test_execute_emits_retrying_event():
 
 
 async def test_execute_emits_failed_when_retries_exhausted():
-    sink = RecordingEventSink()
+    sink = InMemoryEventSink()
     context = RunContext(run_id="run-123", operation_name="barcode_scan")
 
     def always_fails(value: int) -> int:
