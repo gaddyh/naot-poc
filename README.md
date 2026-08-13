@@ -2,6 +2,40 @@
 
 Barcode scanning proof of concept built on top of [zxing-cpp](https://github.com/zxing-cpp/zxing-cpp).
 
+## Architecture
+
+```
+                         CLI
+                          │
+                          ▼
+                  ingest_image graph
+                          │
+                          ▼
+                      scan node
+                          │
+                          ▼
+                    runtime.execute
+                          │
+                          ▼
+                  BarcodeScanner
+                    domain port
+                          │
+                          ▼
+                ZXingBarcodeScanner
+                     integration
+                          │
+                          ▼
+                       zxing
+```
+
+| Layer         | Responsibility                                      |
+|---------------|-----------------------------------------------------|
+| `domain/`     | Contracts & models (`ScanResult`, `BarcodeScanner`) |
+| `integrations/` | External adapters (`ZXingBarcodeScanner`)         |
+| `workflows/`  | Orchestration (LangGraph state machines)            |
+| `runtime/`    | Execution reliability (retry, timeout, events)      |
+| `apps/`       | Entry points (CLI, web, API)                        |
+
 ## Layout
 
 ```
@@ -11,15 +45,25 @@ naot-poc/
 ├── samples/                # place images to scan here
 └── src/
     └── naot_poc/
-        ├── __init__.py
-        ├── __main__.py     # CLI entry point
+        ├── __main__.py             # CLI entry point
         ├── domain/
-        │   ├── __init__.py
-        │   └── models.py   # ScanResult, DetectedBarcode, ...
-        └── scanning/
-            ├── __init__.py
-            ├── scanner.py      # BarcodeScanner protocol
-            └── zxing_scanner.py# ZXingBarcodeScanner implementation
+        │   ├── models.py           # ScanResult, DetectedBarcode, ...
+        │   ├── errors.py           # InvalidInputError, ScannerError, ...
+        │   └── ports.py            # BarcodeScanner protocol
+        ├── integrations/
+        │   └── zxing/
+        │       └── scanner.py      # ZXingBarcodeScanner implementation
+        ├── workflows/
+        │   └── ingest_image/
+        │       ├── graph.py        # LangGraph state machine
+        │       ├── nodes.py        # scan node
+        │       └── state.py        # IngestImageState
+        └── runtime/
+            ├── executor.py         # async execute() with retry & timeout
+            ├── context.py          # RunContext
+            ├── policy.py           # ExecutionPolicy
+            ├── events.py           # RuntimeEvent, EventSink
+            └── errors.py           # RetryableError, PermanentError, TimeoutError
 ```
 
 ## Setup
@@ -27,7 +71,7 @@ naot-poc/
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 ## Usage
@@ -35,11 +79,14 @@ pip install -e .
 Scan a single image:
 
 ```bash
-python -m naot_poc samples/multi_12_clean.jpeg
-# or, after install:
-naot-scan samples/multi_12_clean.jpeg
+naot-scan samples/multi_clear_6_boxes.jpeg
 ```
 
 If no path is provided, the CLI defaults to `samples/multi_12_clean.jpeg`
-relative to the current working directory and prints a helpful message when
-the file is missing.
+relative to the current working directory.
+
+## Tests
+
+```bash
+pytest
+```
