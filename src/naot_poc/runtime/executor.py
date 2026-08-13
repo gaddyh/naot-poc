@@ -1,8 +1,9 @@
 import asyncio
 import inspect
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Awaitable, Callable, Generic, TypeVar
+from typing import Generic, TypeVar
 
 from naot_poc.domain.errors import NaotPocError
 from naot_poc.runtime.context import RunContext
@@ -12,7 +13,7 @@ from naot_poc.runtime.errors import (
     RetryableError,
     TimeoutError,
 )
-from naot_poc.runtime.events import EventSink, NoOpEventSink, RuntimeEvent
+from naot_poc.runtime.events import NO_OP_SINK, EventSink, RuntimeEvent
 from naot_poc.runtime.idempotency import (
     IdempotencyStore,
     PermanentFailureOutcome,
@@ -20,8 +21,7 @@ from naot_poc.runtime.idempotency import (
     StoredOutcome,
     SuccessOutcome,
 )
-from naot_poc.runtime.policy import ExecutionPolicy, NO_RETRY
-
+from naot_poc.runtime.policy import NO_RETRY, ExecutionPolicy
 
 TInput = TypeVar("TInput")
 TOutput = TypeVar("TOutput")
@@ -136,9 +136,7 @@ async def _run_with_retries(
             )
 
         except asyncio.TimeoutError as exc:
-            wrapped = TimeoutError(
-                f"Operation timed out during run {context.run_id}"
-            )
+            wrapped = TimeoutError(f"Operation timed out during run {context.run_id}")
 
             if attempt >= policy.max_attempts:
                 duration_ms = (perf_counter() - start) * 1000
@@ -218,9 +216,7 @@ async def _run_with_retries(
             raise
 
         except Exception as exc:
-            wrapped = PermanentError(
-                f"Unexpected failure during run {context.run_id}"
-            )
+            wrapped = PermanentError(f"Unexpected failure during run {context.run_id}")
 
             duration_ms = (perf_counter() - start) * 1000
 
@@ -304,7 +300,7 @@ async def execute(
     input_: TInput,
     context: RunContext,
     policy: ExecutionPolicy = NO_RETRY,
-    event_sink: EventSink = NoOpEventSink(),
+    event_sink: EventSink = NO_OP_SINK,
     idempotency_key: str | None = None,
     idempotency_store: IdempotencyStore[TOutput] | None = None,
 ) -> ExecutionResult[TOutput]:
@@ -329,7 +325,10 @@ async def execute(
     cached = await store.get(key)
     if cached is not None:
         return await _handle_outcome(
-            cached, context, event_sink, key,
+            cached,
+            context,
+            event_sink,
+            key,
         )
 
     # 2. Try to claim the key.
@@ -339,7 +338,10 @@ async def execute(
         outcome = await store.get(key)
         if outcome is not None:
             return await _handle_outcome(
-                outcome, context, event_sink, key,
+                outcome,
+                context,
+                event_sink,
+                key,
             )
         # Rare race: outcome vanished. Fall through to re-reserve.
         status = await store.reserve(key)
@@ -353,7 +355,10 @@ async def execute(
         )
         outcome = await store.wait_for_completion(key)
         return await _handle_outcome(
-            outcome, context, event_sink, key,
+            outcome,
+            context,
+            event_sink,
+            key,
         )
 
     # 3. ACQUIRED: this caller owns execution.
@@ -420,4 +425,3 @@ async def _handle_outcome(
         idempotency_key=idempotency_key,
     )
     raise _replay_failure(outcome, context)
-

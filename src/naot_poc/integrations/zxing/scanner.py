@@ -15,9 +15,7 @@ from naot_poc.domain.models import (
 class ZXingBarcodeScanner:
     def scan(self, image_path: Path) -> ScanResult:
         if not image_path.exists():
-            raise InvalidInputError(
-                f"Image does not exist: {image_path}"
-            )
+            raise InvalidInputError(f"Image does not exist: {image_path}")
 
         try:
             with Image.open(image_path) as image:
@@ -25,14 +23,10 @@ class ZXingBarcodeScanner:
                 results = zxingcpp.read_barcodes(image)
 
         except UnidentifiedImageError as exc:
-            raise InvalidInputError(
-                f"File is not a valid image: {image_path}"
-            ) from exc
+            raise InvalidInputError(f"File is not a valid image: {image_path}") from exc
 
         except Exception as exc:
-            raise ScannerError(
-                f"Barcode scan failed for: {image_path}"
-            ) from exc
+            raise ScannerError(f"Barcode scan failed for: {image_path}") from exc
 
         barcodes = tuple(
             DetectedBarcode(

@@ -7,6 +7,7 @@ class ExecutionPolicy:
     timeout_seconds: float | None = None
     retry_delay_seconds: float = 0.0
 
+
 NO_RETRY = ExecutionPolicy(
     max_attempts=1,
 )

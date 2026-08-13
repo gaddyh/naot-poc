@@ -21,7 +21,6 @@ from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from naot_poc.runtime.errors import RetryableError
 
-
 TOutput = TypeVar("TOutput")
 
 
@@ -147,9 +146,7 @@ class InMemoryIdempotencyStore(Generic[TOutput]):
             outcome = self._outcomes.get(key)
             if outcome is not None:
                 return outcome
-            raise RetryableError(
-                "Idempotent operation did not complete"
-            )
+            raise RetryableError("Idempotent operation did not complete")
         return await future
 
     async def put_success(

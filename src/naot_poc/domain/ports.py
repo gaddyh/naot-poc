@@ -5,5 +5,4 @@ from naot_poc.domain.models import ScanResult
 
 
 class BarcodeScanner(Protocol):
-    def scan(self, image_path: Path) -> ScanResult:
-        ...
+    def scan(self, image_path: Path) -> ScanResult: ...

@@ -14,7 +14,6 @@ from naot_poc.runtime.idempotency import (
 )
 from naot_poc.runtime.policy import ExecutionPolicy
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -448,18 +447,15 @@ async def test_waiter_then_shared_success_emits_waiting_then_hit():
         )
 
     owner_result, waiter_result = await asyncio.gather(
-        owner_call(), waiter_call(),
+        owner_call(),
+        waiter_call(),
     )
     assert owner_result.value == 14
     assert waiter_result.value == 14
 
-    waiter_events = [
-        e for e in sink.events if e.name == "operation.idempotent.waiting"
-    ]
+    waiter_events = [e for e in sink.events if e.name == "operation.idempotent.waiting"]
     assert len(waiter_events) == 1
-    hit_events = [
-        e for e in sink.events if e.name == "operation.idempotent.hit"
-    ]
+    hit_events = [e for e in sink.events if e.name == "operation.idempotent.hit"]
     assert len(hit_events) == 1
     # The waiter must not have emitted operation.started.
     started_events = [e for e in sink.events if e.name == "operation.started"]

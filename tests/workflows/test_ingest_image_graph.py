@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from naot_poc.domain.models import BarcodeFormat, BoundingBox, DetectedBarcode, ScanResult
+from naot_poc.domain.models import (
+    BarcodeFormat,
+    BoundingBox,
+    DetectedBarcode,
+    ScanResult,
+)
 from naot_poc.workflows.ingest_image.graph import build_ingest_image_graph
 
 
@@ -36,9 +41,7 @@ async def test_graph_runs_scan_node_and_returns_scan_result():
         {"image_path": Path("samples/multi_clear_6_boxes.jpeg")}
     )
 
-    assert scanner.calls == [
-        Path("samples/multi_clear_6_boxes.jpeg")
-    ]
+    assert scanner.calls == [Path("samples/multi_clear_6_boxes.jpeg")]
 
     scan_result = result["scan_result"]
 

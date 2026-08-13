@@ -1,15 +1,15 @@
 import asyncio
 import time
 
-from naot_poc.observability import InMemoryEventSink
-from naot_poc.runtime.context import RunContext
-from naot_poc.runtime.executor import execute
-
 import pytest
 
 from naot_poc.domain.errors import InvalidInputError
-from naot_poc.runtime.errors import ExecutionError, PermanentError, RetryableError
+from naot_poc.observability import InMemoryEventSink
+from naot_poc.runtime.context import RunContext
+from naot_poc.runtime.errors import PermanentError, RetryableError
+from naot_poc.runtime.executor import execute
 from naot_poc.runtime.policy import ExecutionPolicy
+
 
 async def test_execute_returns_operation_result():
     context = RunContext(operation_name="barcode_scan")
@@ -70,6 +70,7 @@ async def test_execute_wraps_unexpected_error():
             context=context,
         )
 
+
 async def test_execute_accepts_policy():
     context = RunContext(operation_name="barcode_scan")
 
@@ -87,6 +88,7 @@ async def test_execute_accepts_policy():
 
     assert result.value == 20
 
+
 async def test_execute_preserves_retryable_error():
     context = RunContext(operation_name="barcode_scan")
 
@@ -99,6 +101,7 @@ async def test_execute_preserves_retryable_error():
             input_="hello",
             context=context,
         )
+
 
 async def test_execute_retries_retryable_error():
     context = RunContext(operation_name="barcode_scan")
