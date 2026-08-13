@@ -28,9 +28,10 @@ asyncio_mode = "auto"
 
 [project.scripts]
 naot-scan = "naot_poc.__main__:main"
+naot-eval = "naot_poc.evaluation.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-naot_poc = ["py.typed"]
+naot_poc = ["py.typed", "evaluation/datasets/*.json"]
