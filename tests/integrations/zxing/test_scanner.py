@@ -1,11 +1,11 @@
 from pathlib import Path
 
-from naot_poc.scanning.zxing_scanner import ZXingBarcodeScanner
+from naot_poc.integrations.zxing import ZXingBarcodeScanner
 import pytest
 
 from naot_poc.domain.errors import InvalidInputError
 
-SAMPLES_DIR = Path(__file__).resolve().parents[2] / "samples"
+SAMPLES_DIR = Path(__file__).resolve().parents[3] / "samples"
 
 
 def test_scans_known_barcode_image():
@@ -30,4 +30,3 @@ def test_missing_image_raises_invalid_input():
         scanner.scan(
             SAMPLES_DIR / "does_not_exist.jpeg"
         )
-        

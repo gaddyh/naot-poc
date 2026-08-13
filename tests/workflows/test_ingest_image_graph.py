@@ -28,16 +28,20 @@ def _scan_result() -> ScanResult:
     )
 
 
-def test_graph_runs_scan_node_and_returns_scan_result():
+async def test_graph_runs_scan_node_and_returns_scan_result():
     scanner = FakeScanner(_scan_result())
     graph = build_ingest_image_graph(scanner)
 
-    result = graph.invoke({"image_path": Path("samples/multi_clear_6_boxes.jpeg")})
+    result = await graph.ainvoke(
+        {"image_path": Path("samples/multi_clear_6_boxes.jpeg")}
+    )
 
-    assert scanner.calls == [Path("samples/multi_clear_6_boxes.jpeg")]
-    assert "scan_result" in result
+    assert scanner.calls == [
+        Path("samples/multi_clear_6_boxes.jpeg")
+    ]
 
     scan_result = result["scan_result"]
+
     assert scan_result.image_width == 1608
     assert scan_result.image_height == 2048
     assert scan_result.barcodes[0].value == "7297500243430"

@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 from naot_poc.runtime.context import RunContext
@@ -9,13 +10,13 @@ from naot_poc.domain.errors import InvalidInputError
 from naot_poc.runtime.errors import ExecutionError, PermanentError, RetryableError
 from naot_poc.runtime.policy import ExecutionPolicy
 
-def test_execute_returns_operation_result():
+async def test_execute_returns_operation_result():
     context = RunContext(operation_name="barcode_scan")
 
     def double(value: int) -> int:
         return value * 2
 
-    result = execute(
+    result = await execute(
         operation=double,
         input_=21,
         context=context,
@@ -24,14 +25,14 @@ def test_execute_returns_operation_result():
     assert result.value == 42
 
 
-def test_execute_measures_duration():
+async def test_execute_measures_duration():
     context = RunContext(operation_name="barcode_scan")
 
     def slow_operation(value: str) -> str:
         time.sleep(0.01)
         return value
 
-    result = execute(
+    result = await execute(
         operation=slow_operation,
         input_="hello",
         context=context,
@@ -41,34 +42,34 @@ def test_execute_measures_duration():
     assert result.duration_ms >= 10
 
 
-def test_execute_preserves_application_error():
+async def test_execute_preserves_application_error():
     context = RunContext(operation_name="barcode_scan")
 
     def operation(value: str) -> str:
         raise InvalidInputError("bad input")
 
     with pytest.raises(InvalidInputError):
-        execute(
+        await execute(
             operation=operation,
             input_="hello",
             context=context,
         )
 
 
-def test_execute_wraps_unexpected_error():
+async def test_execute_wraps_unexpected_error():
     context = RunContext(operation_name="barcode_scan")
 
     def operation(value: str) -> str:
         raise KeyError("boom")
 
     with pytest.raises(PermanentError):
-        execute(
+        await execute(
             operation=operation,
             input_="hello",
             context=context,
         )
 
-def test_execute_accepts_policy():
+async def test_execute_accepts_policy():
     context = RunContext(operation_name="barcode_scan")
 
     policy = ExecutionPolicy(
@@ -76,7 +77,7 @@ def test_execute_accepts_policy():
         timeout_seconds=2.0,
     )
 
-    result = execute(
+    result = await execute(
         operation=lambda value: value * 2,
         input_=10,
         context=context,
@@ -85,20 +86,20 @@ def test_execute_accepts_policy():
 
     assert result.value == 20
 
-def test_execute_preserves_retryable_error():
+async def test_execute_preserves_retryable_error():
     context = RunContext(operation_name="barcode_scan")
 
     def operation(value: str) -> str:
         raise RetryableError("temporary failure")
 
     with pytest.raises(RetryableError):
-        execute(
+        await execute(
             operation=operation,
             input_="hello",
             context=context,
         )
 
-def test_execute_retries_retryable_error():
+async def test_execute_retries_retryable_error():
     context = RunContext(operation_name="barcode_scan")
     calls = 0
 
@@ -116,7 +117,7 @@ def test_execute_retries_retryable_error():
         retry_delay_seconds=0,
     )
 
-    result = execute(
+    result = await execute(
         operation=operation,
         input_=10,
         context=context,
@@ -128,7 +129,7 @@ def test_execute_retries_retryable_error():
     assert calls == 3
 
 
-def test_execute_stops_after_max_attempts():
+async def test_execute_stops_after_max_attempts():
     context = RunContext(operation_name="barcode_scan")
     calls = 0
 
@@ -143,7 +144,7 @@ def test_execute_stops_after_max_attempts():
     )
 
     with pytest.raises(RetryableError):
-        execute(
+        await execute(
             operation=operation,
             input_=10,
             context=context,
@@ -153,7 +154,7 @@ def test_execute_stops_after_max_attempts():
     assert calls == 3
 
 
-def test_execute_does_not_retry_permanent_error():
+async def test_execute_does_not_retry_permanent_error():
     context = RunContext(operation_name="barcode_scan")
     calls = 0
 
@@ -168,7 +169,7 @@ def test_execute_does_not_retry_permanent_error():
     )
 
     with pytest.raises(PermanentError):
-        execute(
+        await execute(
             operation=operation,
             input_=10,
             context=context,
@@ -176,6 +177,59 @@ def test_execute_does_not_retry_permanent_error():
         )
 
     assert calls == 1
+
+
+async def test_execute_runs_async_operation():
+    context = RunContext(operation_name="barcode_scan")
+
+    async def async_double(value: int) -> int:
+        return value * 2
+
+    result = await execute(
+        operation=async_double,
+        input_=21,
+        context=context,
+    )
+
+    assert result.value == 42
+    assert result.attempts == 1
+
+
+async def test_execute_times_out_and_retries():
+    sink = RecordingEventSink()
+    context = RunContext(run_id="run-timeout", operation_name="barcode_scan")
+    calls = 0
+
+    async def slow_then_fast(value: int) -> int:
+        nonlocal calls
+        calls += 1
+
+        if calls == 1:
+            await asyncio.sleep(1.0)
+
+        return value * 2
+
+    policy = ExecutionPolicy(
+        max_attempts=2,
+        timeout_seconds=0.05,
+        retry_delay_seconds=0,
+    )
+
+    result = await execute(
+        operation=slow_then_fast,
+        input_=10,
+        context=context,
+        policy=policy,
+        event_sink=sink,
+    )
+
+    assert result.value == 20
+    assert result.attempts == 2
+    assert calls == 2
+
+    retrying = sink.events[1]
+    assert retrying.name == "operation.retrying"
+    assert retrying.attributes["error_type"] == "TimeoutError"
 
 
 from naot_poc.runtime.context import RunContext
@@ -191,11 +245,11 @@ class RecordingEventSink:
         self.events.append(event)
 
 
-def test_execute_emits_started_and_succeeded_events():
+async def test_execute_emits_started_and_succeeded_events():
     sink = RecordingEventSink()
     context = RunContext(run_id="run-123", operation_name="barcode_scan")
 
-    result = execute(
+    result = await execute(
         operation=lambda value: value * 2,
         input_=5,
         context=context,
@@ -235,7 +289,7 @@ class RecordingEventSink:
         self.events.append(event)
 
 
-def test_execute_emits_retrying_event():
+async def test_execute_emits_retrying_event():
     sink = RecordingEventSink()
     context = RunContext(run_id="run-123", operation_name="barcode_scan")
 
@@ -255,7 +309,7 @@ def test_execute_emits_retrying_event():
         retry_delay_seconds=0,
     )
 
-    result = execute(
+    result = await execute(
         operation=flaky_operation,
         input_=5,
         context=context,
@@ -281,7 +335,7 @@ def test_execute_emits_retrying_event():
     assert retrying.attributes["retry_delay_seconds"] == 0
 
 
-def test_execute_emits_failed_when_retries_exhausted():
+async def test_execute_emits_failed_when_retries_exhausted():
     sink = RecordingEventSink()
     context = RunContext(run_id="run-123", operation_name="barcode_scan")
 
@@ -294,7 +348,7 @@ def test_execute_emits_failed_when_retries_exhausted():
     )
 
     try:
-        execute(
+        await execute(
             operation=always_fails,
             input_=5,
             context=context,
