@@ -26,15 +26,22 @@ Barcode scanning proof of concept built on top of [zxing-cpp](https://github.com
                           │
                           ▼
                        zxing
+
+  runtime emits RuntimeEvent ──▶ EventSink
+                                    ▲
+                                    │
+                          observability/sinks.py
+                          LoggingEventSink | InMemoryEventSink
 ```
 
-| Layer         | Responsibility                                      |
-|---------------|-----------------------------------------------------|
-| `domain/`     | Contracts & models (`ScanResult`, `BarcodeScanner`) |
-| `integrations/` | External adapters (`ZXingBarcodeScanner`)         |
-| `workflows/`  | Orchestration (LangGraph state machines)            |
-| `runtime/`    | Execution reliability (retry, timeout, events)      |
-| `apps/`       | Entry points (CLI, web, API)                        |
+| Layer            | Responsibility                                              |
+|------------------|-------------------------------------------------------------|
+| `domain/`        | Contracts & models (`ScanResult`, `BarcodeScanner`)         |
+| `integrations/`  | External adapters (`ZXingBarcodeScanner`)                   |
+| `workflows/`     | Orchestration (LangGraph state machines)                    |
+| `runtime/`       | Execution reliability (retry, timeout, idempotency, events) |
+| `observability/` | Concrete `EventSink` implementations (logging, in-memory)  |
+| `apps/`          | Entry points (CLI, web, API)                                |
 
 ## Layout
 
@@ -62,9 +69,11 @@ naot-poc/
             ├── executor.py         # async execute() with retry, timeout & idempotency
             ├── context.py          # RunContext
             ├── policy.py           # ExecutionPolicy
-            ├── events.py           # RuntimeEvent, EventSink
+            ├── events.py           # RuntimeEvent, EventSink protocol, NoOpEventSink
             ├── idempotency.py      # IdempotencyStore, InMemoryIdempotencyStore
             └── errors.py           # RetryableError, PermanentError, TimeoutError
+        └── observability/
+            └── sinks.py            # LoggingEventSink, InMemoryEventSink
 ```
 
 ## Setup
@@ -139,6 +148,44 @@ Python process only.
 > idempotency semantics. The clean fix is to classify domain errors into
 > `RetryableError` / `PermanentError` at the integration boundary before they
 > reach `execute()`.
+
+## Observability
+
+`execute()` emits `RuntimeEvent`s throughout its lifecycle:
+
+- `operation.started` — actual execution begins (owner path only; never on
+  cache hits or while waiting)
+- `operation.retrying` — a retryable/timeout failure triggered a retry
+- `operation.succeeded` — the operation returned a value
+- `operation.failed` — retries exhausted
+- `operation.idempotent.hit` — cached success returned without re-running
+- `operation.idempotent.replayed` — cached permanent failure re-raised
+- `operation.idempotent.waiting` — a concurrent duplicate is waiting for the
+  owner's outcome
+
+Events go to an `EventSink` (a `Protocol` defined in `runtime/events.py`).
+The default is `NO_OP_SINK` (discards everything). Concrete sinks live in
+`observability/`:
+
+- `LoggingEventSink` — one human-readable log line per event via stdlib
+  `logging` (`run_id=<id> <event.name> key=value ...`).
+- `InMemoryEventSink` — records events in a list; intended for tests and
+  local development.
+
+```python
+from naot_poc.observability import LoggingEventSink
+
+await execute(
+    operation=scanner.scan,
+    input_=image_path,
+    context=context,
+    event_sink=LoggingEventSink(),
+)
+```
+
+Runtime emits facts; observability decides what to do with them. The
+runtime layer has no dependency on `observability/` — it only knows the
+`EventSink` protocol.
 
 ## Tests
 
