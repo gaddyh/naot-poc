@@ -23,9 +23,12 @@ variant found a code, tile index, upscale factor) stay inside the integration
 layer. ``orientation`` is surfaced to the domain because it describes an
 actual detection and may matter for later reconciliation/recovery.
 
-The imported algorithm is configured here with the barcode formats relevant to
-this project (Code128 + EAN13); its own default remains Code128-only so the
-original behaviour is preserved.
+The imported algorithm defaults to Code128-only, and this adapter keeps that
+default: a controlled experiment (see README "Baseline vs. multi-pass scanner")
+showed that Code128 alone is sufficient for this dataset, so keeping it isolates
+the multi-pass *algorithm* as the sole variable under test. Callers can pass
+additional formats (e.g. EAN13) if a future dataset contains genuine
+EAN13-only codes.
 """
 
 from __future__ import annotations
@@ -52,13 +55,16 @@ from naot_poc.integrations.zxing.enhanced_scanner import (
     DetectedBarcode as _InternalDetectedBarcode,
 )
 
-# Default format set for this project: shoe-box/product barcodes are EAN13-style,
-# while warehouse/logistics labels are frequently Code128. Scanning both removes
-# an artificial handicap versus the baseline (which reads all formats) while
-# keeping the multi-pass strategy as the variable under test.
+# Default format set for this project. The multi-pass algorithm's own default
+# is Code128-only, and the first controlled experiment confirmed that Code128
+# alone is sufficient for this dataset: the 13-digit shoe-box codes are decoded
+# as Code128 by zxing-cpp, so enabling EAN13 had zero measured effect on recall
+# (see README "Baseline vs. multi-pass scanner"). Code128-only is kept as the
+# default so the experiment isolates the multi-pass *algorithm* as the sole
+# variable. Callers can pass additional formats (e.g. EAN13) if a future dataset
+# contains genuine EAN13-only codes.
 DEFAULT_FORMATS: tuple[zxingcpp.BarcodeFormat, ...] = (
     zxingcpp.BarcodeFormat.Code128,
-    zxingcpp.BarcodeFormat.EAN13,
 )
 
 # Maps the internal scanner's normalized format strings to the domain enum.

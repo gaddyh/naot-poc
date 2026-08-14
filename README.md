@@ -48,8 +48,10 @@ Both scanner implementations conform to the same `BarcodeScanner` port
 (`scan(path) -> ScanResult`), so the workflow and evaluation harness are
 agnostic to which one runs. `MultiPassZXingScanner` is a thin adapter over
 the imported multi-pass algorithm in `enhanced_scanner.py`; it maps that
-algorithm's internal detections into the domain `ScanResult` and configures
-it with the barcode formats relevant to this project (Code128 + EAN13).
+algorithm's internal detections into the domain `ScanResult`. It defaults to
+Code128-only (matching the imported algorithm's own default); a controlled
+experiment confirmed Code128 alone is sufficient for this dataset, so keeping
+it isolates the multi-pass *algorithm* as the sole variable under test.
 
 | Layer            | Responsibility                                              |
 |------------------|-------------------------------------------------------------|
@@ -334,19 +336,29 @@ separate visible boxes, while positions are ignored.
 ### Baseline vs. multi-pass scanner
 
 First controlled experiment, run over `barcode_image_ground_truth_v1`
-(9 evaluated cases, 74 expected barcodes). The only variable is the scanner;
-dataset, target, domain output and evaluator are identical between runs.
+(9 evaluated cases, 74 expected barcodes). Dataset, target, domain output and
+evaluator are identical across all runs; the only variable is the scanner.
 
-| Metric                  | `baseline` (ZXingBarcodeScanner) | `multipass` (MultiPassZXingScanner) |
-|-------------------------|----------------------------------|-------------------------------------|
-| `overall_barcode_recall`| 12.16%                           | **55.41%**                          |
-| `complete_image_rate`   | 0.00%                            | **11.11%** (1/9)                    |
-| `total_false_positives` | 2                                | 5                                   |
-| matched / expected      | 9 / 74                           | **41 / 74**                         |
-| `p50_latency_ms`        | 67.2                             | 1080.3                              |
-| `p95_latency_ms`        | 84.7                             | 1297.6                              |
+Three runs are reported to separate two confounded variables — the multi-pass
+*algorithm* and the barcode *format set*:
 
-Per-image recall (matched / expected):
+- `baseline` — `ZXingBarcodeScanner`, single-pass, reads all zxing-cpp formats.
+- `multipass` (Code128-only) — `MultiPassZXingScanner` with its default
+  `formats=(Code128,)`. This is the committed default.
+- `multipass` (Code128+EAN13) — same scanner with `formats=(Code128, EAN13)`,
+  run once to test whether enabling EAN13 decoding matters for this dataset.
+
+| Metric                  | `baseline` | `multipass` (Code128) | `multipass` (Code128+EAN13) |
+|-------------------------|-----------:|----------------------:|----------------------------:|
+| `overall_barcode_recall`| 12.16%     | **55.41%**            | 55.41%                      |
+| `complete_image_rate`   | 0.00%      | **11.11%** (1/9)      | 11.11% (1/9)                |
+| `total_false_positives` | 2          | 5                     | 5                           |
+| matched / expected      | 9 / 74     | **41 / 74**           | 41 / 74                     |
+| `p50_latency_ms`        | 67.2       | 1001.0                | 1080.3                      |
+| `p95_latency_ms`        | 84.7       | 1288.4                | 1297.6                      |
+
+Per-image recall (matched / expected) — identical between the two multipass
+configurations, so one column is shown:
 
 | image                                  | exp | baseline | multipass |
 |----------------------------------------|----:|---------:|----------:|
@@ -360,16 +372,26 @@ Per-image recall (matched / expected):
 | vegan_12_labels_a.jpeg                 |  12 |      0/12|       1/12 |
 | vegan_12_labels_b.jpeg                 |  12 |      0/12|       2/12 |
 
-**Read.** The multi-pass strategy (overlapping tile grid, half-shifted tiles,
-multi-scale/preprocessing fallbacks, OpenCV label-candidate detection) is a
-large recall win on the multi-box photos it was designed for — `multi_12_clean`
-went 0→10, `multi_clear_6_boxes` reached full recall, and the two
-`topdown_12_labels` images went 1→8 and 1→7. Overall recall rose ~4.5×
-(12% → 55%) and the run produced the first fully-correct image.
+**Read.** The entire 12% → 55% recall gain comes from the multi-pass *algorithm*
+(overlapping tile grid, half-shifted tiles, multi-scale/preprocessing fallbacks,
+OpenCV label-candidate detection) — `multi_12_clean` went 0→10,
+`multi_clear_6_boxes` reached full recall, and the two `topdown_12_labels`
+images went 1→8 and 1→7. Overall recall rose ~4.5× (12% → 55%) and the run
+produced the first fully-correct image.
 
-The cost is latency (~16× p50, 67ms → 1080ms) and a few more false positives
-(2 → 5) — the expected recall/latency tradeoff for a multi-pass + label-fallback
-scanner, and exactly the kind of tradeoff the harness was built to surface.
+The format set had **zero measured effect**: the Code128-only and
+Code128+EAN13 runs are identical on every per-image recall and every aggregate
+metric. The 13-digit shoe-box codes in this dataset are decoded as Code128 by
+zxing-cpp, so enabling EAN13 does not pick up any additional barcodes. This is
+why `MultiPassZXingScanner` defaults to Code128-only — it keeps the multi-pass
+algorithm as the sole variable under test and avoids implying the format config
+drove the improvement. (EAN13 can be passed explicitly if a future dataset
+contains genuine EAN13-only codes.)
+
+The cost of the multi-pass strategy is latency (~15× p50, 67ms → 1001ms) and a
+few more false positives (2 → 5) — the expected recall/latency tradeoff for a
+multi-pass + label-fallback scanner, and exactly the kind of tradeoff the
+harness was built to surface.
 
 The two `vegan_12_labels` images remain near-zero (1/12, 2/12); the multi-pass
 pipeline is not reaching those labels, so they are the next thing to diagnose
