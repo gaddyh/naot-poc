@@ -4,18 +4,28 @@ Usage::
 
     naot-eval
     naot-eval --dataset path/to/dataset.json --root /repo
+    naot-eval --scanner multipass
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+from functools import partial
 from pathlib import Path
 
+from naot_poc.domain.ports import BarcodeScanner
 from naot_poc.evaluation.datasets.loader import load_dataset
 from naot_poc.evaluation.regression.runner import print_report, run_evaluation
+from naot_poc.evaluation.targets.ingest_image import run_ingest_image
+from naot_poc.integrations.zxing import MultiPassZXingScanner, ZXingBarcodeScanner
 
 DEFAULT_DATASET = Path("src/naot_poc/evaluation/datasets/barcode_baseline.json")
+
+SCANNERS: dict[str, type[BarcodeScanner]] = {
+    "baseline": ZXingBarcodeScanner,
+    "multipass": MultiPassZXingScanner,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,21 +44,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Root directory for resolving image paths in the dataset "
         "(defaults to the current working directory).",
     )
+    parser.add_argument(
+        "--scanner",
+        default="baseline",
+        choices=sorted(SCANNERS),
+        help="Scanner implementation to evaluate (defaults to baseline).",
+    )
     return parser
 
 
-async def _run(dataset_path: Path, root: Path) -> int:
+async def _run(dataset_path: Path, root: Path, scanner: BarcodeScanner) -> int:
     dataset = load_dataset(dataset_path)
     print(f"dataset: {dataset.name} ({len(dataset.cases)} cases)")
+    print(f"scanner: {type(scanner).__name__}")
     if dataset.excluded_cases:
         print(f"excluded: {len(dataset.excluded_cases)} case(s) marked exclude_from_eval")
     if dataset.metadata.get("_note"):
         print(f"note:    {dataset.metadata['_note']}")
     print()
 
+    target = partial(run_ingest_image, scanner=scanner)
     runs, metrics = await run_evaluation(
         cases=list(dataset.cases),
         root=root,
+        target=target,
     )
 
     print_report(runs, metrics)
@@ -59,7 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     dataset_path = Path(args.dataset)
     root = Path(args.root).resolve()
-    return asyncio.run(_run(dataset_path, root))
+    scanner = SCANNERS[args.scanner]()
+    return asyncio.run(_run(dataset_path, root, scanner))
 
 
 if __name__ == "__main__":

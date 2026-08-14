@@ -28,6 +28,7 @@ class DetectedBarcode:
     value: str
     format: BarcodeFormat
     bounding_box: BoundingBox
+    orientation: int = 0
 
 
 @dataclass(frozen=True)
