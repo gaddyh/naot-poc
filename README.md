@@ -20,12 +20,17 @@ Barcode scanning proof of concept built on top of [zxing-cpp](https://github.com
                   BarcodeScanner
                     domain port
                           │
-                          ▼
-                ZXingBarcodeScanner
-                     integration
-                          │
-                          ▼
-                       zxing
+            ┌─────────────┴─────────────┐
+            ▼                           ▼
+      ZXingBarcodeScanner        MultiPassZXingScanner
+       (single-pass)                 (adapter)
+            │                           │
+            ▼                           ▼
+          zxing              enhanced_scanner.BarcodeScanner
+                                   (multi-pass algorithm)
+                                          │
+                                          ▼
+                                  zxing / cv2 / numpy
 
   runtime emits RuntimeEvent ──▶ EventSink
                                     ▲
@@ -39,10 +44,17 @@ Barcode scanning proof of concept built on top of [zxing-cpp](https://github.com
                        └──▶ ingest_image graph + runtime ──┘
 ```
 
+Both scanner implementations conform to the same `BarcodeScanner` port
+(`scan(path) -> ScanResult`), so the workflow and evaluation harness are
+agnostic to which one runs. `MultiPassZXingScanner` is a thin adapter over
+the imported multi-pass algorithm in `enhanced_scanner.py`; it maps that
+algorithm's internal detections into the domain `ScanResult` and configures
+it with the barcode formats relevant to this project (Code128 + EAN13).
+
 | Layer            | Responsibility                                              |
 |------------------|-------------------------------------------------------------|
 | `domain/`        | Contracts & models (`ScanResult`, `BarcodeScanner`)         |
-| `integrations/`  | External adapters (`ZXingBarcodeScanner`)                   |
+| `integrations/`  | External adapters (`ZXingBarcodeScanner`, `MultiPassZXingScanner`) |
 | `workflows/`     | Orchestration (LangGraph state machines)                    |
 | `runtime/`       | Execution reliability (retry, timeout, idempotency, events) |
 | `observability/` | Concrete `EventSink` implementations (logging, in-memory)  |
@@ -65,7 +77,9 @@ naot-poc/
         │   └── ports.py            # BarcodeScanner protocol
         ├── integrations/
         │   └── zxing/
-        │       └── scanner.py      # ZXingBarcodeScanner implementation
+        │       ├── scanner.py          # ZXingBarcodeScanner (single-pass baseline)
+        │       ├── multipass.py        # MultiPassZXingScanner adapter -> ScanResult
+        │       └── enhanced_scanner.py # imported multi-pass algorithm (cv2/numpy)
         ├── workflows/
         │   └── ingest_image/
         │       ├── graph.py        # LangGraph state machine
@@ -217,11 +231,22 @@ actually improves the system, against a fixed baseline.
 naot-eval
 ```
 
+Select the scanner implementation under test (`baseline` = single-pass
+`ZXingBarcodeScanner`, `multipass` = `MultiPassZXingScanner`):
+
+```bash
+naot-eval --scanner multipass
+```
+
 Optionally point at a different dataset or image root:
 
 ```bash
 naot-eval --dataset path/to/dataset.json --root /repo
 ```
+
+Both scanners are driven through the same target, domain output and evaluator,
+so a run is a controlled before/after experiment where the scanner is the only
+variable.
 
 ### Model: dataset → target → evaluator → experiment
 
@@ -305,6 +330,50 @@ reports it as excluded.
 
 Matching is by **multiset of values** (EAN13 strings); duplicate values count as
 separate visible boxes, while positions are ignored.
+
+### Baseline vs. multi-pass scanner
+
+First controlled experiment, run over `barcode_image_ground_truth_v1`
+(9 evaluated cases, 74 expected barcodes). The only variable is the scanner;
+dataset, target, domain output and evaluator are identical between runs.
+
+| Metric                  | `baseline` (ZXingBarcodeScanner) | `multipass` (MultiPassZXingScanner) |
+|-------------------------|----------------------------------|-------------------------------------|
+| `overall_barcode_recall`| 12.16%                           | **55.41%**                          |
+| `complete_image_rate`   | 0.00%                            | **11.11%** (1/9)                    |
+| `total_false_positives` | 2                                | 5                                   |
+| matched / expected      | 9 / 74                           | **41 / 74**                         |
+| `p50_latency_ms`        | 67.2                             | 1080.3                              |
+| `p95_latency_ms`        | 84.7                             | 1297.6                              |
+
+Per-image recall (matched / expected):
+
+| image                                  | exp | baseline | multipass |
+|----------------------------------------|----:|---------:|----------:|
+| WhatsApp Image …17.06.21 (2).jpeg      |   1 |      1/1 |       1/1 |
+| marny_brown_42.jpeg                    |   1 |      1/1 |       1/1 |
+| multi_12_clean.jpeg                    |  12 |      0/12|    **10/12** |
+| multi_clear_6_boxes.jpeg               |   6 |      3/6 |    **6/6 ✓** |
+| stacked_6_labels.jpeg                  |   6 |      2/6 |       5/6 |
+| topdown_12_labels_a.jpeg               |  12 |      1/12|       8/12 |
+| topdown_12_labels_b.jpeg               |  12 |      1/12|       7/12 |
+| vegan_12_labels_a.jpeg                 |  12 |      0/12|       1/12 |
+| vegan_12_labels_b.jpeg                 |  12 |      0/12|       2/12 |
+
+**Read.** The multi-pass strategy (overlapping tile grid, half-shifted tiles,
+multi-scale/preprocessing fallbacks, OpenCV label-candidate detection) is a
+large recall win on the multi-box photos it was designed for — `multi_12_clean`
+went 0→10, `multi_clear_6_boxes` reached full recall, and the two
+`topdown_12_labels` images went 1→8 and 1→7. Overall recall rose ~4.5×
+(12% → 55%) and the run produced the first fully-correct image.
+
+The cost is latency (~16× p50, 67ms → 1080ms) and a few more false positives
+(2 → 5) — the expected recall/latency tradeoff for a multi-pass + label-fallback
+scanner, and exactly the kind of tradeoff the harness was built to surface.
+
+The two `vegan_12_labels` images remain near-zero (1/12, 2/12); the multi-pass
+pipeline is not reaching those labels, so they are the next thing to diagnose
+when pushing recall further.
 
 ### Reusing the evaluator as a LangSmith code evaluator
 
