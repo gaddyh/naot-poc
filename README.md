@@ -17,6 +17,10 @@ Barcode scanning proof of concept built on top of [zxing-cpp](https://github.com
                     runtime.execute
                           │
                           ▼
+              PrimaryOnlyScanner (wrapper)
+                 filters to EAN-13-valid
+                          │
+                          ▼
                   BarcodeScanner
                     domain port
                           │
@@ -48,15 +52,21 @@ Both scanner implementations conform to the same `BarcodeScanner` port
 (`scan(path) -> ScanResult`), so the workflow and evaluation harness are
 agnostic to which one runs. `MultiPassZXingScanner` is a thin adapter over
 the imported multi-pass algorithm in `enhanced_scanner.py`; it maps that
-algorithm's internal detections into the domain `ScanResult`. It defaults to
-Code128-only (matching the imported algorithm's own default); a controlled
-experiment confirmed Code128 alone is sufficient for this dataset, so keeping
-it isolates the multi-pass *algorithm* as the sole variable under test.
+algorithm's internal detections into the domain `ScanResult`. It is configured
+with the symbologies present in this project's data (Code128 + EAN13).
+
+`PrimaryOnlyScanner` wraps any `BarcodeScanner` and filters its output to only
+valid EAN-13 barcodes (13 digits + checksum). The Naot workflow cares only
+about the primary GTIN-13 barcode on each shoe box; secondary Code128 model/size
+barcodes are noise. zxing-cpp classifies GTIN-13 bars as Code128 regardless of
+the requested format set, so the filter validates the decoded *value*, not the
+`format` field. The eval CLI applies this filter by default (`--no-primary-only`
+to disable).
 
 | Layer            | Responsibility                                              |
 |------------------|-------------------------------------------------------------|
-| `domain/`        | Contracts & models (`ScanResult`, `BarcodeScanner`)         |
-| `integrations/`  | External adapters (`ZXingBarcodeScanner`, `MultiPassZXingScanner`) |
+| `domain/`        | Contracts & models (`ScanResult`, `BarcodeScanner`, `is_valid_ean13`) |
+| `integrations/`  | External adapters (`ZXingBarcodeScanner`, `MultiPassZXingScanner`, `PrimaryOnlyScanner`) |
 | `workflows/`     | Orchestration (LangGraph state machines)                    |
 | `runtime/`       | Execution reliability (retry, timeout, idempotency, events) |
 | `observability/` | Concrete `EventSink` implementations (logging, in-memory)  |
@@ -75,9 +85,11 @@ naot-poc/
         ├── __main__.py             # CLI entry point
         ├── domain/
         │   ├── models.py           # ScanResult, DetectedBarcode, ...
+        │   ├── barcode.py          # is_valid_ean13() — EAN-13 checksum validation
         │   ├── errors.py           # InvalidInputError, ScannerError, ...
         │   └── ports.py            # BarcodeScanner protocol
         ├── integrations/
+        │   ├── primary_only.py     # PrimaryOnlyScanner wrapper (EAN-13 filter)
         │   └── zxing/
         │       ├── scanner.py          # ZXingBarcodeScanner (single-pass baseline)
         │       ├── multipass.py        # MultiPassZXingScanner adapter -> ScanResult
@@ -233,6 +245,11 @@ actually improves the system, against a fixed baseline.
 naot-eval
 ```
 
+By default the selected scanner is wrapped with `PrimaryOnlyScanner`, which
+filters results to only valid EAN-13 barcodes (the primary GTIN-13 on each
+shoe box). Use `--no-primary-only` to see raw scanner output including
+secondary Code128 model/size barcodes.
+
 Select the scanner implementation under test (`baseline` = single-pass
 `ZXingBarcodeScanner`, `multipass` = `MultiPassZXingScanner`):
 
@@ -333,69 +350,70 @@ reports it as excluded.
 Matching is by **multiset of values** (EAN13 strings); duplicate values count as
 separate visible boxes, while positions are ignored.
 
-### Baseline vs. multi-pass scanner
+### Baseline vs. multi-pass scanner (primary-only)
 
-First controlled experiment, run over `barcode_image_ground_truth_v1`
-(9 evaluated cases, 74 expected barcodes). Dataset, target, domain output and
-evaluator are identical across all runs; the only variable is the scanner.
+The Naot workflow cares only about the primary EAN-13/GTIN-13 barcode on each
+shoe box. Both scanners are wrapped with `PrimaryOnlyScanner`, which filters
+results to only valid EAN-13 barcodes (13 digits + checksum). This removes
+secondary Code128 model/size barcodes (e.g. `900439-42`) that are real barcodes
+but noise for this workflow.
 
-Three runs are reported to separate two confounded variables — the multi-pass
-*algorithm* and the barcode *format set*:
+Run over `barcode_image_ground_truth_v1` (9 evaluated cases, 74 expected
+barcodes). Dataset, target, domain output and evaluator are identical; the only
+variable is the scanner.
 
-- `baseline` — `ZXingBarcodeScanner`, single-pass, reads all zxing-cpp formats.
-- `multipass` (Code128-only) — `MultiPassZXingScanner` with its default
-  `formats=(Code128,)`. This is the committed default.
-- `multipass` (Code128+EAN13) — same scanner with `formats=(Code128, EAN13)`,
-  run once to test whether enabling EAN13 decoding matters for this dataset.
+| Metric                  | `baseline` (primary-only) | `multipass` (primary-only) |
+|-------------------------|--------------------------:|---------------------------:|
+| `overall_barcode_recall`| 12.16%                    | **55.41%**                 |
+| `complete_image_rate`   | 22.22% (2/9)              | **33.33%** (3/9)           |
+| `total_false_positives` | 0                         | 1                          |
+| matched / expected      | 9 / 74                    | **41 / 74**                |
+| `p50_latency_ms`        | 68.4                      | 1008.4                     |
+| `p95_latency_ms`        | 95.8                      | 1301.2                     |
 
-| Metric                  | `baseline` | `multipass` (Code128) | `multipass` (Code128+EAN13) |
-|-------------------------|-----------:|----------------------:|----------------------------:|
-| `overall_barcode_recall`| 12.16%     | **55.41%**            | 55.41%                      |
-| `complete_image_rate`   | 0.00%      | **11.11%** (1/9)      | 11.11% (1/9)                |
-| `total_false_positives` | 2          | 5                     | 5                           |
-| matched / expected      | 9 / 74     | **41 / 74**           | 41 / 74                     |
-| `p50_latency_ms`        | 67.2       | 1001.0                | 1080.3                      |
-| `p95_latency_ms`        | 84.7       | 1288.4                | 1297.6                      |
-
-Per-image recall (matched / expected) — identical between the two multipass
-configurations, so one column is shown:
+Per-image results (matched / expected, false positives):
 
 | image                                  | exp | baseline | multipass |
 |----------------------------------------|----:|---------:|----------:|
-| WhatsApp Image …17.06.21 (2).jpeg      |   1 |      1/1 |       1/1 |
-| marny_brown_42.jpeg                    |   1 |      1/1 |       1/1 |
-| multi_12_clean.jpeg                    |  12 |      0/12|    **10/12** |
-| multi_clear_6_boxes.jpeg               |   6 |      3/6 |    **6/6 ✓** |
-| stacked_6_labels.jpeg                  |   6 |      2/6 |       5/6 |
-| topdown_12_labels_a.jpeg               |  12 |      1/12|       8/12 |
-| topdown_12_labels_b.jpeg               |  12 |      1/12|       7/12 |
-| vegan_12_labels_a.jpeg                 |  12 |      0/12|       1/12 |
-| vegan_12_labels_b.jpeg                 |  12 |      0/12|       2/12 |
+| WhatsApp Image …17.06.21 (2).jpeg      |   1 |   1/1 0fp|   1/1 0fp |
+| marny_brown_42.jpeg                    |   1 |   1/1 0fp|   1/1 0fp |
+| multi_12_clean.jpeg                    |  12 |   0/12   |  10/12 1fp|
+| multi_clear_6_boxes.jpeg               |   6 |   3/6    |  **6/6 ✓**|
+| stacked_6_labels.jpeg                  |   6 |   2/6    |   5/6 0fp |
+| topdown_12_labels_a.jpeg               |  12 |   1/12   |   8/12    |
+| topdown_12_labels_b.jpeg               |  12 |   1/12   |   7/12    |
+| vegan_12_labels_a.jpeg                 |  12 |   0/12   |   1/12    |
+| vegan_12_labels_b.jpeg                 |  12 |   0/12   |   2/12    |
 
-**Read.** The entire 12% → 55% recall gain comes from the multi-pass *algorithm*
-(overlapping tile grid, half-shifted tiles, multi-scale/preprocessing fallbacks,
-OpenCV label-candidate detection) — `multi_12_clean` went 0→10,
-`multi_clear_6_boxes` reached full recall, and the two `topdown_12_labels`
-images went 1→8 and 1→7. Overall recall rose ~4.5× (12% → 55%) and the run
-produced the first fully-correct image.
+**Read.** The multi-pass algorithm drives the recall gain (12% → 55%, ~4.5×),
+and the EAN-13 primary-only filter drives the precision gain (false positives
+0 and 1 respectively, complete-image-rate up from 0% to 22% / 33%). These are
+independent improvements: the filter removes secondary Code128 model/size
+barcodes that are real but irrelevant; the multi-pass strategy finds primary
+barcodes the single-pass scanner misses on multi-box photos.
 
-The format set had **zero measured effect**: the Code128-only and
-Code128+EAN13 runs are identical on every per-image recall and every aggregate
-metric. The 13-digit shoe-box codes in this dataset are decoded as Code128 by
-zxing-cpp, so enabling EAN13 does not pick up any additional barcodes. This is
-why `MultiPassZXingScanner` defaults to Code128-only — it keeps the multi-pass
-algorithm as the sole variable under test and avoids implying the format config
-drove the improvement. (EAN13 can be passed explicitly if a future dataset
-contains genuine EAN13-only codes.)
+`multi_12_clean` went 0→10, `multi_clear_6_boxes` reached full recall, and the
+two `topdown_12_labels` images went 1→8 and 1→7. The multipass run produced 3
+fully-correct images (up from 0 for the unfiltered baseline).
 
-The cost of the multi-pass strategy is latency (~15× p50, 67ms → 1001ms) and a
-few more false positives (2 → 5) — the expected recall/latency tradeoff for a
-multi-pass + label-fallback scanner, and exactly the kind of tradeoff the
-harness was built to surface.
+The cost of the multi-pass strategy is latency (~15× p50, 68ms → ~1000ms) — the
+expected recall/latency tradeoff for a multi-pass + label-fallback scanner.
 
 The two `vegan_12_labels` images remain near-zero (1/12, 2/12); the multi-pass
 pipeline is not reaching those labels, so they are the next thing to diagnose
 when pushing recall further.
+
+#### Why the filter validates the value, not the format field
+
+zxing-cpp classifies the GTIN-13 bars as `Code128` regardless of the requested
+format set (verified with an unrestricted scan *and* an EAN13-only scan, which
+fails to decode the GTIN at all). So the `format` field cannot distinguish
+primary (EAN-13/GTIN) from secondary (Code128 model/size) barcodes — zxing-cpp
+labels both as `Code128`. `PrimaryOnlyScanner` validates the decoded *value*
+(13 digits + EAN-13 checksum), which correctly accepts `7297501098442` and
+rejects `900439-42`. `MultiPassZXingScanner` is configured with `Code128 + EAN13`
+because that is the semantically correct set for this data; the value-based
+filter, not the format field, carries the primary/secondary distinction.
 
 ### Reusing the evaluator as a LangSmith code evaluator
 

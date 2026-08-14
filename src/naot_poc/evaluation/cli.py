@@ -5,6 +5,7 @@ Usage::
     naot-eval
     naot-eval --dataset path/to/dataset.json --root /repo
     naot-eval --scanner multipass
+    naot-eval --no-primary-only
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from naot_poc.domain.ports import BarcodeScanner
 from naot_poc.evaluation.datasets.loader import load_dataset
 from naot_poc.evaluation.regression.runner import print_report, run_evaluation
 from naot_poc.evaluation.targets.ingest_image import run_ingest_image
+from naot_poc.integrations.primary_only import PrimaryOnlyScanner
 from naot_poc.integrations.zxing import MultiPassZXingScanner, ZXingBarcodeScanner
 
 DEFAULT_DATASET = Path("src/naot_poc/evaluation/datasets/barcode_baseline.json")
@@ -50,6 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(SCANNERS),
         help="Scanner implementation to evaluate (defaults to baseline).",
     )
+    parser.add_argument(
+        "--no-primary-only",
+        dest="primary_only",
+        action="store_false",
+        default=True,
+        help="Disable EAN-13 primary-only filtering (keep all detected barcodes). "
+        "By default only valid EAN-13 barcodes are kept, matching the Naot workflow.",
+    )
     return parser
 
 
@@ -78,7 +88,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     dataset_path = Path(args.dataset)
     root = Path(args.root).resolve()
-    scanner = SCANNERS[args.scanner]()
+    scanner: BarcodeScanner = SCANNERS[args.scanner]()
+    if args.primary_only:
+        scanner = PrimaryOnlyScanner(scanner)
     return asyncio.run(_run(dataset_path, root, scanner))
 
 

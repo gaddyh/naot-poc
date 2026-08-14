@@ -1006,6 +1006,16 @@ class BarcodeScanner:
             return_errors=False,
         )
 
+        # Defensive: zxing-cpp should only return formats we requested, but
+        # assert it so a format-filter regression surfaces immediately rather
+        # than silently inflating false positives / skewing experiments.
+        for result in results:
+            if result.text and result.format not in self.formats:
+                raise AssertionError(
+                    f"zxing-cpp returned format {result.format!r} which is not in "
+                    f"the requested set {self.formats!r} (value={result.text!r})"
+                )
+
         detections: list[DetectedBarcode] = []
 
         for result in results:
