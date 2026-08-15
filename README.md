@@ -86,14 +86,18 @@ naot-poc/
         │   └── ports.py            # BarcodeScanner protocol
         ├── integrations/
         │   ├── primary_only.py     # PrimaryOnlyScanner wrapper (EAN-13 filter)
+        │   ├── gemini/
+        │   │   ├── auditor.py      # GeminiSpatialAuditor (cached, lazy Gemini adapter)
+        │   │   ├── vision.py       # Gemini spatial label audit (pydantic schemas)
+        │   │   └── geometry.py     # normalized→pixel bbox conversion
         │   └── zxing/
-        │       ├── scanner.py          # ZXingBarcodeScanner (single-pass baseline)
         │       ├── multipass.py        # MultiPassZXingScanner adapter -> ScanResult
-        │       └── enhanced_scanner.py # imported multi-pass algorithm (cv2/numpy)
+        │       └── enhanced_scanner.py # multi-pass algorithm (cv2/numpy, perspective)
         ├── workflows/
         │   └── ingest_image/
-        │       ├── graph.py        # LangGraph state machine
-        │       ├── nodes.py        # scan node
+        │       ├── graph.py        # LangGraph state machine (scan + audited variants)
+        │       ├── nodes.py        # scan, audit, reconcile, recovery, merge nodes
+        │       ├── reconciliation.py  # spatial matching of detections to Gemini labels
         │       └── state.py        # IngestImageState
         ├── runtime/
         │   ├── executor.py         # async execute() with retry, timeout & idempotency
@@ -105,18 +109,21 @@ naot-poc/
         ├── observability/
         │   └── sinks.py            # LoggingEventSink, InMemoryEventSink
         └── evaluation/
-            ├── cli.py              # naot-eval entry point
+            ├── cli.py              # naot-eval entry point (--target scan|audited)
             ├── datasets/
             │   ├── models.py       # EvaluationCase (inputs / reference_outputs / metadata)
             │   ├── loader.py       # load_dataset()
             │   └── barcode_baseline.json
             ├── targets/
-            │   └── ingest_image.py # run_ingest_image() — workflow -> {"barcodes": [...]}
+            │   └── ingest_image.py # run_ingest_image() / run_audited_ingest_image()
             ├── evaluators/
             │   └── barcode_accuracy.py  # pure (inputs, outputs, ref) -> scores dict
-            └── regression/
-                ├── runner.py       # run_evaluation(), print_report()
-                └── aggregate.py    # EvaluationRun, AggregateMetrics, aggregate()
+            ├── regression/
+            │   ├── runner.py       # run_evaluation(), print_report()
+            │   └── aggregate.py    # EvaluationRun, AggregateMetrics, aggregate()
+            └── recovery/
+                ├── extract_crops.py  # extract failed crops for micro-benchmarking
+                └── benchmark.py      # isolated crop-level transform testing
 ```
 
 ## Setup
@@ -243,6 +250,9 @@ naot-eval
 
 # Audited (multipass ZXing + Gemini spatial audit + targeted recovery)
 naot-eval --target audited
+
+# Force re-fetch from Gemini (ignore cached audit responses)
+naot-eval --target audited --refresh-cache
 ```
 
 By default the scanner is wrapped with `PrimaryOnlyScanner`, which filters
@@ -255,6 +265,11 @@ the multipass scanner and Gemini's spatial label audit concurrently, reconciles
 their original-image bounding boxes, then sends only unmatched eligible label
 regions through targeted deterministic recovery. Gemini locates labels and
 reports status/confidence; it never supplies barcode digits.
+
+Gemini audit responses are cached per-image in `evaluation/.gemini_cache/` so
+repeated audited runs produce identical results without calling the API. Use
+`--refresh-cache` to ignore the cache and re-fetch (useful when the prompt or
+model changes). The cache is gitignored.
 
 ```bash
 pip install -e ".[dev,gemini]"
