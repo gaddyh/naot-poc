@@ -25,7 +25,18 @@ async def run_ingest_image(
 ) -> dict[str, Any]:
     image_path = Path(inputs["image"])
     graph = build_ingest_image_graph(scanner or MultiPassZXingScanner())
-    result = await graph.ainvoke({"image_path": image_path})
+    result = await graph.ainvoke(
+        {"image_path": image_path},
+        config={
+            "run_name": "ingest_image.baseline",
+            "tags": ["naot-poc", "ingest-image", "baseline"],
+            "metadata": {
+                "workflow": "ingest_image",
+                "mode": "baseline",
+                "image_name": image_path.name,
+            },
+        },
+    )
     scan_result = result["scan_result"]
     return {"barcodes": [barcode.value for barcode in scan_result.barcodes]}
 
@@ -54,7 +65,18 @@ async def run_audited_ingest_image(
         auditor,
         recovery_scanner or scanner,
     )
-    result = await graph.ainvoke({"image_path": image_path})
+    result = await graph.ainvoke(
+        {"image_path": image_path},
+        config={
+            "run_name": "ingest_image.audited",
+            "tags": ["naot-poc", "ingest-image", "audited"],
+            "metadata": {
+                "workflow": "ingest_image",
+                "mode": "audited",
+                "image_name": image_path.name,
+            },
+        },
+    )
     scan_result = result["scan_result"]
     reconciliation = result.get("reconciliation")
     return {

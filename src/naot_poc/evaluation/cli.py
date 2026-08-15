@@ -110,6 +110,17 @@ async def _run(
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    # Load .env before any LangGraph/LangSmith tracing initializes so that
+    # LANGSMITH_* config (tracing, api key, project, endpoint) takes effect for
+    # every eval run. Guarded so the CLI still works without the gemini extra.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:  # pragma: no cover - optional dependency
+        pass
+
     dataset_path = Path(args.dataset)
     root = Path(args.root).resolve()
     target_name = args.target
