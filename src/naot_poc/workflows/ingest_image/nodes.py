@@ -2,6 +2,8 @@ import asyncio
 from time import perf_counter
 from typing import Any
 
+from langsmith import traceable
+
 from naot_poc.domain.barcode import is_valid_ean13
 from naot_poc.domain.models import BoundingBox, DetectedBarcode, ScanResult
 from naot_poc.runtime.context import RunContext
@@ -20,6 +22,26 @@ _CROP_PADDINGS: tuple[tuple[str, float], ...] = (
     ("+25%", 0.25),
     ("+40%", 0.40),
 )
+
+
+@traceable(name="zxing.scan", run_type="tool")
+async def _traced_scan(scanner: Any, image_path: Any) -> Any:
+    """Traced wrapper around the zxing scan execution for LangSmith nesting."""
+    return await execute(
+        operation=scanner.scan,
+        input_=image_path,
+        context=RunContext(operation_name="scan_image"),
+    )
+
+
+@traceable(name="gemini.spatial_audit", run_type="tool")
+async def _traced_audit(auditor: Any, image_path: Any) -> Any:
+    """Traced wrapper around the Gemini spatial audit execution for LangSmith nesting."""
+    return await execute(
+        operation=auditor.audit,
+        input_=image_path,
+        context=RunContext(operation_name="gemini_spatial_audit"),
+    )
 
 
 class IngestImageNodes:
@@ -46,20 +68,8 @@ class AuditedIngestImageNodes:
 
     async def parallel_scan_audit(self, state: IngestImageState):
         image_path = state["image_path"]
-        scan_task = asyncio.create_task(
-            execute(
-                operation=self.scanner.scan,
-                input_=image_path,
-                context=RunContext(operation_name="scan_image"),
-            )
-        )
-        audit_task = asyncio.create_task(
-            execute(
-                operation=self.auditor.audit,
-                input_=image_path,
-                context=RunContext(operation_name="gemini_spatial_audit"),
-            )
-        )
+        scan_task = asyncio.create_task(_traced_scan(self.scanner, image_path))
+        audit_task = asyncio.create_task(_traced_audit(self.auditor, image_path))
 
         scan_result, audit_result = await asyncio.gather(
             scan_task,
