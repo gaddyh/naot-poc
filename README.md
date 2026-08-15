@@ -24,17 +24,15 @@ Barcode scanning proof of concept built on top of [zxing-cpp](https://github.com
                   BarcodeScanner
                     domain port
                           │
-            ┌─────────────┴─────────────┐
-            ▼                           ▼
-      ZXingBarcodeScanner        MultiPassZXingScanner
-       (single-pass)                 (adapter)
-            │                           │
-            ▼                           ▼
-          zxing              enhanced_scanner.BarcodeScanner
-                                   (multi-pass algorithm)
-                                          │
-                                          ▼
-                                  zxing / cv2 / numpy
+                          ▼
+              MultiPassZXingScanner (adapter)
+                          │
+                          ▼
+              enhanced_scanner.BarcodeScanner
+                   (multi-pass algorithm)
+                          │
+                          ▼
+                  zxing / cv2 / numpy
 
   runtime emits RuntimeEvent ──▶ EventSink
                                     ▲
@@ -48,12 +46,10 @@ Barcode scanning proof of concept built on top of [zxing-cpp](https://github.com
                        └──▶ ingest_image graph + runtime ──┘
 ```
 
-Both scanner implementations conform to the same `BarcodeScanner` port
-(`scan(path) -> ScanResult`), so the workflow and evaluation harness are
-agnostic to which one runs. `MultiPassZXingScanner` is a thin adapter over
-the imported multi-pass algorithm in `enhanced_scanner.py`; it maps that
-algorithm's internal detections into the domain `ScanResult`. It is configured
-with the symbologies present in this project's data (Code128 + EAN13).
+`MultiPassZXingScanner` is a thin adapter over the multi-pass algorithm in
+`enhanced_scanner.py`; it maps that algorithm's internal detections into the
+domain `ScanResult`. It is configured with the symbologies present in this
+project's data (Code128 + EAN13).
 
 `PrimaryOnlyScanner` wraps any `BarcodeScanner` and filters its output to only
 valid EAN-13 barcodes (13 digits + checksum). The Naot workflow cares only
@@ -66,7 +62,7 @@ to disable).
 | Layer            | Responsibility                                              |
 |------------------|-------------------------------------------------------------|
 | `domain/`        | Contracts & models (`ScanResult`, `BarcodeScanner`, `is_valid_ean13`) |
-| `integrations/`  | External adapters (`ZXingBarcodeScanner`, `MultiPassZXingScanner`, `PrimaryOnlyScanner`) |
+| `integrations/`  | External adapters (`MultiPassZXingScanner`, `PrimaryOnlyScanner`) |
 | `workflows/`     | Orchestration (LangGraph state machines)                    |
 | `runtime/`       | Execution reliability (retry, timeout, idempotency, events) |
 | `observability/` | Concrete `EventSink` implementations (logging, in-memory)  |
@@ -242,20 +238,34 @@ metrics. It exists to measure whether each later layer (Gemini, recovery)
 actually improves the system, against a fixed baseline.
 
 ```bash
+# Scan-only (multipass ZXing, no Gemini)
 naot-eval
+
+# Audited (multipass ZXing + Gemini spatial audit + targeted recovery)
+naot-eval --target audited
 ```
 
-By default the selected scanner is wrapped with `PrimaryOnlyScanner`, which
-filters results to only valid EAN-13 barcodes (the primary GTIN-13 on each
-shoe box). Use `--no-primary-only` to see raw scanner output including
-secondary Code128 model/size barcodes.
+By default the scanner is wrapped with `PrimaryOnlyScanner`, which filters
+results to only valid EAN-13 barcodes (the primary GTIN-13 on each shoe box).
+Use `--no-primary-only` to see raw scanner output including secondary Code128
+model/size barcodes.
 
-Select the scanner implementation under test (`baseline` = single-pass
-`ZXingBarcodeScanner`, `multipass` = `MultiPassZXingScanner`):
+The `scan` target runs the multipass scanner alone. The `audited` target runs
+the multipass scanner and Gemini's spatial label audit concurrently, reconciles
+their original-image bounding boxes, then sends only unmatched eligible label
+regions through targeted deterministic recovery. Gemini locates labels and
+reports status/confidence; it never supplies barcode digits.
 
 ```bash
-naot-eval --scanner multipass
+pip install -e ".[dev,gemini]"
+export GEMINI_API_KEY="..."
+naot-eval --target audited
 ```
+
+Audited runs print per-region recovery diagnostics after each image, including
+label index, attempt count, whether a primary barcode was recovered, successful
+transform names, and region latency. Any evaluation false positives are also
+printed as `fp_values` so targeted-recovery regressions can be investigated.
 
 Optionally point at a different dataset or image root:
 
@@ -263,9 +273,8 @@ Optionally point at a different dataset or image root:
 naot-eval --dataset path/to/dataset.json --root /repo
 ```
 
-Both scanners are driven through the same target, domain output and evaluator,
-so a run is a controlled before/after experiment where the scanner is the only
-variable.
+Both targets use the same domain output and evaluator, so results are directly
+comparable.
 
 ### Model: dataset → target → evaluator → experiment
 
@@ -334,6 +343,8 @@ Aggregate:
 | `total_false_positives` | Σ extra                                              |
 | `p50_latency_ms`        | median per-case latency (nearest-rank)               |
 | `p95_latency_ms`        | 95th percentile per-case latency (nearest-rank)      |
+| `audit_failure_rate`    | Gemini audit failures / audited images               |
+| `targeted_recovery_success_rate` | recovered missing regions / attempted regions |
 
 `complete` is strict: an image with every expected barcode **plus** a false
 positive is **not** complete.
@@ -350,58 +361,113 @@ reports it as excluded.
 Matching is by **multiset of values** (EAN13 strings); duplicate values count as
 separate visible boxes, while positions are ignored.
 
-### Baseline vs. multi-pass scanner (primary-only)
+### Scan vs. audited target (primary-only)
 
 The Naot workflow cares only about the primary EAN-13/GTIN-13 barcode on each
-shoe box. Both scanners are wrapped with `PrimaryOnlyScanner`, which filters
+shoe box. The scanner is wrapped with `PrimaryOnlyScanner`, which filters
 results to only valid EAN-13 barcodes (13 digits + checksum). This removes
 secondary Code128 model/size barcodes (e.g. `900439-42`) that are real barcodes
 but noise for this workflow.
 
 Run over `barcode_image_ground_truth_v1` (9 evaluated cases, 74 expected
-barcodes). Dataset, target, domain output and evaluator are identical; the only
-variable is the scanner.
+barcodes). The `scan` target runs the multipass scanner alone; the `audited`
+target adds Gemini spatial audit + targeted recovery.
 
-| Metric                  | `baseline` (primary-only) | `multipass` (primary-only) |
-|-------------------------|--------------------------:|---------------------------:|
-| `overall_barcode_recall`| 12.16%                    | **55.41%**                 |
-| `complete_image_rate`   | 22.22% (2/9)              | **33.33%** (3/9)           |
-| `total_false_positives` | 0                         | 1                          |
-| matched / expected      | 9 / 74                    | **41 / 74**                |
-| `p50_latency_ms`        | 68.4                      | 1008.4                     |
-| `p95_latency_ms`        | 95.8                      | 1301.2                     |
+| Metric                          | `scan`   | `audited`   |
+|---------------------------------|---------:|------------:|
+| `overall_barcode_recall`        | 55.41%   | **74.32%**  |
+| `complete_image_rate`           | 33.33%   | **44.44%**  |
+| `total_false_positives`         | 1        | 3           |
+| matched / expected              | 41 / 74  | **55 / 74** |
+| `targeted_recovery_success_rate`| —        | 50.00%      |
+| `p50_latency_ms`                | 1008.4   | 3929.4      |
 
 Per-image results (matched / expected, false positives):
 
-| image                                  | exp | baseline | multipass |
-|----------------------------------------|----:|---------:|----------:|
-| WhatsApp Image …17.06.21 (2).jpeg      |   1 |   1/1 0fp|   1/1 0fp |
-| marny_brown_42.jpeg                    |   1 |   1/1 0fp|   1/1 0fp |
-| multi_12_clean.jpeg                    |  12 |   0/12   |  10/12 1fp|
-| multi_clear_6_boxes.jpeg               |   6 |   3/6    |  **6/6 ✓**|
-| stacked_6_labels.jpeg                  |   6 |   2/6    |   5/6 0fp |
-| topdown_12_labels_a.jpeg               |  12 |   1/12   |   8/12    |
-| topdown_12_labels_b.jpeg               |  12 |   1/12   |   7/12    |
-| vegan_12_labels_a.jpeg                 |  12 |   0/12   |   1/12    |
-| vegan_12_labels_b.jpeg                 |  12 |   0/12   |   2/12    |
+| image                                  | exp | scan      | audited       |
+|----------------------------------------|----:|----------:|--------------:|
+| WhatsApp Image …17.06.21 (2).jpeg      |   1 |   1/1 0fp |    1/1 0fp    |
+| marny_brown_42.jpeg                    |   1 |   1/1 0fp |    1/1 0fp    |
+| multi_12_clean.jpeg                    |  12 |  10/12 1fp|   11/12 1fp   |
+| multi_clear_6_boxes.jpeg               |   6 |  **6/6 ✓**|   **6/6 ✓**   |
+| stacked_6_labels.jpeg                  |   6 |   5/6 0fp |   **6/6 ✓**   |
+| topdown_12_labels_a.jpeg               |  12 |   8/12    |   11/12 1fp   |
+| topdown_12_labels_b.jpeg               |  12 |   7/12    |   11/12 1fp   |
+| vegan_12_labels_a.jpeg                 |  12 |   1/12    |    5/12       |
+| vegan_12_labels_b.jpeg                 |  12 |   2/12    |    3/12       |
 
-**Read.** The multi-pass algorithm drives the recall gain (12% → 55%, ~4.5×),
-and the EAN-13 primary-only filter drives the precision gain (false positives
-0 and 1 respectively, complete-image-rate up from 0% to 22% / 33%). These are
-independent improvements: the filter removes secondary Code128 model/size
-barcodes that are real but irrelevant; the multi-pass strategy finds primary
-barcodes the single-pass scanner misses on multi-box photos.
+The audited path adds +14 matched barcodes (41→55) via targeted recovery.
+Perspective correction + CLAHE is the top-performing recovery transform.
 
-`multi_12_clean` went 0→10, `multi_clear_6_boxes` reached full recall, and the
-two `topdown_12_labels` images went 1→8 and 1→7. The multipass run produced 3
-fully-correct images (up from 0 for the unfiltered baseline).
+The two `vegan_12_labels` images remain low (5/12, 3/12). The `vegan_12_labels_b`
+crops are below Nyquist (~90px wide for 95 EAN-13 modules = 1px/module) — no
+deterministic decoder can recover them at this capture resolution.
 
-The cost of the multi-pass strategy is latency (~15× p50, 68ms → ~1000ms) — the
-expected recall/latency tradeoff for a multi-pass + label-fallback scanner.
+### Audited workflow: Gemini spatial audit + targeted recovery
 
-The two `vegan_12_labels` images remain near-zero (1/12, 2/12); the multi-pass
-pipeline is not reaching those labels, so they are the next thing to diagnose
-when pushing recall further.
+The audited target (`--target audited`) runs the multipass scanner and a Gemini
+spatial-label audit in parallel, reconciles the results, and applies targeted
+deterministic recovery to Gemini-unmatched regions.
+
+Workflow stages:
+
+```
+parallel_scan_audit  (scanner + Gemini audit in parallel)
+        ↓
+reconcile            (match scanner detections to Gemini label boxes)
+        ↓
+targeted_recovery    (crop + decode each unmatched region)
+        ↓
+merge                (dedup recovery results against initial scan)
+```
+
+Recovery uses adaptive crop padding (exact, +10%, +25%, +40%) and a 12-transform
+tree per crop (8 original + perspective correction + 4x scale variants). Each
+transform is named in diagnostics (e.g. `rotate_0_3x_perspective_clahe`).
+
+#### Sampling limit on vegan_12_labels_b
+
+The `vegan_12_labels_b` image has 12 visible labels but the barcode crops are
+only ~90x50px. An EAN-13 barcode has 95 modules, so at 90px width the sampling
+rate is ~1px/module -- below the Nyquist rate (>=2px/module needed). No
+deterministic decoder can recover these barcodes; the information was never
+captured at sufficient resolution. The `vegan_12_labels_a` image (same carton,
+photographed closer) has larger crops (55-81px min dimension) and recovers 5/12.
+
+This is a capture-quality limit, not a decoding limit. Future work to recover
+these images would require either higher-resolution photography or a neural
+barcode super-resolution model.
+
+#### False-positive provenance
+
+The audited false positives are duplicate occurrences of real barcode values
+(multiset semantics), not hallucinated values:
+
+- `multi_12_clean`: `7297501154117` appears twice in the initial multipass scan
+  at positions far enough apart that the scanner's dedup doesn't merge them.
+- `topdown_12_labels_a` / `topdown_12_labels_b`: recovery crops overlap
+  neighboring already-detected labels, re-finding a barcode that was already
+  counted. This is a spatial reconciliation issue, not a decoding error.
+
+#### Crop-level micro-benchmark
+
+A fast, isolated diagnostic tool for recovery development -- no Gemini, no
+LangGraph, no full image:
+
+```bash
+# Extract crops from an audited run
+.venv/bin/python -m naot_poc.evaluation.recovery.extract_crops \
+    --output-dir evaluation/recovery
+
+# Run transform candidates on each crop
+.venv/bin/python -m naot_poc.evaluation.recovery.benchmark \
+    --input evaluation/recovery/recovery_cases.json
+```
+
+The micro-benchmark reports per-crop success/failure, transform success
+distribution, false positives, and neighbor bleeds. Per-transform latency is
+<1ms (vs ~4s for the full audited workflow), enabling rapid iteration on
+recovery parameters.
 
 #### Why the filter validates the value, not the format field
 

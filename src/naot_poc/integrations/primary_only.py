@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from naot_poc.domain.barcode import is_valid_ean13
-from naot_poc.domain.models import ScanResult
+from naot_poc.domain.models import BoundingBox, ScanResult
 from naot_poc.domain.ports import BarcodeScanner
 
 
@@ -33,7 +33,26 @@ class PrimaryOnlyScanner:
         self._inner = inner
 
     def scan(self, image_path: Path) -> ScanResult:
-        result = self._inner.scan(image_path)
+        return self._filter(self._inner.scan(image_path))
+
+    def recover_region(self, image_path: Path, region: BoundingBox) -> ScanResult:
+        recovery = getattr(self._inner, "recover_region", None)
+        if recovery is None:
+            raise TypeError("inner scanner does not support targeted recovery")
+        return self._filter(recovery(image_path, region))
+
+    def recover_region_diagnostics(self, image_path: Path, region: BoundingBox):
+        recovery = getattr(self._inner, "recover_region_diagnostics", None)
+        if recovery is None:
+            raise TypeError("inner scanner does not support recovery diagnostics")
+        diagnostics = recovery(image_path, region)
+        return type(diagnostics)(
+            result=self._filter(diagnostics.result),
+            attempts=diagnostics.attempts,
+        )
+
+    @staticmethod
+    def _filter(result: ScanResult) -> ScanResult:
         primary = tuple(
             barcode for barcode in result.barcodes if is_valid_ean13(barcode.value)
         )

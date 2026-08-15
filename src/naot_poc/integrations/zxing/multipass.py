@@ -33,10 +33,11 @@ zxing-cpp does recognize a true EAN-13.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import zxingcpp
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from naot_poc.domain.errors import InvalidInputError, ScannerError
 from naot_poc.domain.models import (
@@ -54,6 +55,14 @@ from naot_poc.integrations.zxing.enhanced_scanner import (
 from naot_poc.integrations.zxing.enhanced_scanner import (
     DetectedBarcode as _InternalDetectedBarcode,
 )
+from naot_poc.integrations.zxing.enhanced_scanner import RecoveryAttempt
+
+
+@dataclass(frozen=True)
+class TargetedRecoveryDiagnostics:
+    result: ScanResult
+    attempts: tuple[RecoveryAttempt, ...]
+
 
 # Default format set for this project. Shoe-box/product barcodes are GTIN-13
 # (EAN-13) on the left and Code128 (model/size) on the right, so both symbologies
@@ -79,8 +88,7 @@ class MultiPassZXingScanner:
     """BarcodeScanner port implementation backed by the multi-pass algorithm.
 
     Conforms to :class:`naot_poc.domain.ports.BarcodeScanner` so it is a
-    drop-in replacement for :class:`ZXingBarcodeScanner` in the workflow and
-    the evaluation harness.
+    drop-in scanner for the workflow and the evaluation harness.
     """
 
     def __init__(
@@ -116,6 +124,49 @@ class MultiPassZXingScanner:
             barcodes=barcodes,
             image_width=width,
             image_height=height,
+        )
+
+    def recover_region(self, image_path: Path, region: BoundingBox) -> ScanResult:
+        return self.recover_region_diagnostics(image_path, region).result
+
+    def recover_region_diagnostics(
+        self,
+        image_path: Path,
+        region: BoundingBox,
+    ) -> TargetedRecoveryDiagnostics:
+        if not image_path.exists():
+            raise InvalidInputError(f"Image does not exist: {image_path}")
+
+        try:
+            with Image.open(image_path) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+                x1 = max(0, min(region.x1, image.width))
+                y1 = max(0, min(region.y1, image.height))
+                x2 = max(x1, min(region.x2, image.width))
+                y2 = max(y1, min(region.y2, image.height))
+                crop = image.crop((x1, y1, x2, y2))
+                internal, attempts = self._scanner.scan_crop_with_recovery_diagnostics(
+                    crop,
+                    offset_x=x1,
+                    offset_y=y1,
+                )
+
+        except UnidentifiedImageError as exc:
+            raise InvalidInputError(
+                f"File is not a valid image: {image_path}"
+            ) from exc
+        except Exception as exc:
+            raise ScannerError(
+                f"Targeted barcode recovery failed for: {image_path}"
+            ) from exc
+
+        return TargetedRecoveryDiagnostics(
+            result=ScanResult(
+                barcodes=tuple(self._to_domain(detection) for detection in internal),
+                image_width=image.width,
+                image_height=image.height,
+            ),
+            attempts=tuple(attempts),
         )
 
     @staticmethod

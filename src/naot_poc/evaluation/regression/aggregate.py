@@ -44,6 +44,8 @@ class AggregateMetrics:
     total_expected: int
     p50_latency_ms: float
     p95_latency_ms: float
+    audit_failure_rate: float = 0.0
+    targeted_recovery_success_rate: float = 0.0
 
 
 def _percentile(sorted_values: list[float], percentile: float) -> float:
@@ -70,6 +72,14 @@ def aggregate(runs: list[EvaluationRun]) -> AggregateMetrics:
     complete_image_rate = 1.0 if case_count == 0 else complete_count / case_count
 
     latencies = sorted(run.latency_ms for run in runs)
+    audited = [run for run in runs if "audit_failed" in run.outputs]
+    audit_failures = sum(bool(run.outputs.get("audit_failed")) for run in audited)
+    recovery_attempts = sum(
+        int(run.outputs.get("targeted_recovery_attempts", 0)) for run in runs
+    )
+    recovery_successes = sum(
+        int(run.outputs.get("targeted_recovery_successes", 0)) for run in runs
+    )
 
     return AggregateMetrics(
         case_count=case_count,
@@ -80,4 +90,8 @@ def aggregate(runs: list[EvaluationRun]) -> AggregateMetrics:
         total_expected=total_expected,
         p50_latency_ms=_percentile(latencies, 50),
         p95_latency_ms=_percentile(latencies, 95),
+        audit_failure_rate=(audit_failures / len(audited) if audited else 0.0),
+        targeted_recovery_success_rate=(
+            recovery_successes / recovery_attempts if recovery_attempts else 0.0
+        ),
     )

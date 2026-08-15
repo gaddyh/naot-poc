@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from io import BytesIO
+from itertools import pairwise
 from pathlib import Path
 from statistics import median
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -55,6 +57,16 @@ class LabelCandidate:
     offset_y: int
     bounding_box: BoundingBox
     score: float
+
+
+@dataclass(frozen=True)
+class RecoveryAttempt:
+    rotation: int
+    scale: float
+    preprocessing: str
+    inverted: bool
+    values: tuple[str, ...]
+    duration_ms: float
 
 
 class BarcodeScanner:
@@ -530,53 +542,47 @@ class BarcodeScanner:
         offset_x: int = 0,
         offset_y: int = 0,
     ) -> list[DetectedBarcode]:
-        """Aggressive recovery scan for a single crop, including 90° rotation.
-
-        Runs the standard ``_decode_crop_variants`` preprocessing pipeline
-        (CLAHE, Otsu, adaptive, aggressive sharpen, invert) on the crop as-is,
-        then repeats the same variants on a 90°-rotated copy. This catches
-        barcodes that are oriented perpendicular to the image axis and were
-        not decoded by the full-image scan (which uses ``try_rotate=True``
-        but at a coarser resolution).
-
-        Decoded positions from the rotated pass are mapped back to the
-        original (unrotated) coordinate frame so they align with the
-        full-image detections.
-
-        Only used on the Gemini-guided recovery path — never on the happy path.
-        """
-        # --- Normal orientation ---
-        collected = self._decode_crop_variants(
+        detections, _ = self.scan_crop_with_recovery_diagnostics(
             crop,
             offset_x=offset_x,
             offset_y=offset_y,
         )
+        return detections
 
-        if self._contains_primary_barcode(collected):
-            return self._deduplicate(collected)
-
-        # --- 90° rotation ---
-        rotated = crop.rotate(90, expand=True)
-        rotated_offset_x = offset_x
-        rotated_offset_y = offset_y
-
-        rotated_detections = self._decode_crop_variants(
-            rotated,
-            offset_x=rotated_offset_x,
-            offset_y=rotated_offset_y,
+    def scan_crop_with_recovery_diagnostics(
+        self,
+        crop: Image.Image,
+        *,
+        offset_x: int = 0,
+        offset_y: int = 0,
+    ) -> tuple[list[DetectedBarcode], list[RecoveryAttempt]]:
+        """Recover one crop and report every transform attempt."""
+        collected, attempts = self._decode_crop_variants_diagnostics(
+            crop,
+            offset_x=offset_x,
+            offset_y=offset_y,
+            rotation=0,
         )
 
-        # Map rotated-frame positions back to the original coordinate frame.
-        # A 90° CCW rotation maps (rx, ry) in the rotated image to:
-        #   x = ry
-        #   y = crop_width - rx
-        # (where rx, ry are relative to the rotated image's origin).
-        crop_w, crop_h = crop.size
+        if self._contains_primary_barcode(collected):
+            return self._deduplicate(collected), attempts
+
+        rotated = crop.rotate(90, expand=True)
+        rotated_detections, rotated_attempts = self._decode_crop_variants_diagnostics(
+            rotated,
+            offset_x=offset_x,
+            offset_y=offset_y,
+            rotation=90,
+        )
+        crop_w, _ = crop.size
         for det in rotated_detections:
+            # PIL rotate(90) is 90° CCW. A point (rx, ry) in the rotated crop
+            # maps to (crop_w-1-ry, rx) in the original crop. Adding the crop
+            # offset gives original-image coordinates.
             mapped_position = tuple(
                 Point(
-                    x=offset_x + (p.y - rotated_offset_y),
-                    y=offset_y + crop_w - (p.x - rotated_offset_x),
+                    x=offset_x + crop_w - 1 - (p.y - offset_y),
+                    y=offset_y + (p.x - offset_x),
                 )
                 for p in det.position
             )
@@ -590,8 +596,60 @@ class BarcodeScanner:
                     bounding_box=self._bounding_box(mapped_position),
                 )
             )
+        return self._deduplicate(collected), attempts + rotated_attempts
 
-        return self._deduplicate(collected)
+    def _decode_crop_variants_diagnostics(
+        self,
+        crop: Image.Image,
+        *,
+        offset_x: int,
+        offset_y: int,
+        rotation: int,
+    ) -> tuple[list[DetectedBarcode], list[RecoveryAttempt]]:
+        attempts = (
+            (2.0, "original", False),
+            (2.0, "clahe", False),
+            (2.0, "sharpened", False),
+            (3.0, "otsu", False),
+            (3.0, "adaptive", False),
+            (3.0, "aggressive_sharpen", False),
+            (0.80, "original", False),
+            (3.0, "otsu", True),
+            # Perspective correction + CLAHE — recovers crops where the
+            # barcode is skewed/compressed. Identified by the crop-level
+            # micro-benchmark as the top-performing new transform.
+            (3.0, "perspective_clahe", False),
+            (4.0, "perspective_clahe", False),
+            (4.0, "clahe", False),
+            (4.0, "aggressive_sharpen", False),
+        )
+        collected: list[DetectedBarcode] = []
+        diagnostics: list[RecoveryAttempt] = []
+        for scale, preprocessing, inverted in attempts:
+            started = perf_counter()
+            found = self._decode_region(
+                image=crop,
+                offset_x=offset_x,
+                offset_y=offset_y,
+                scale=scale,
+                preprocessing=preprocessing,
+                try_downscale=False,
+                try_invert=inverted,
+            )
+            collected.extend(found)
+            diagnostics.append(
+                RecoveryAttempt(
+                    rotation=rotation,
+                    scale=scale,
+                    preprocessing=preprocessing,
+                    inverted=inverted,
+                    values=tuple(detection.value for detection in found),
+                    duration_ms=(perf_counter() - started) * 1000,
+                )
+            )
+            if self._contains_primary_barcode(found):
+                break
+        return collected, diagnostics
 
     @classmethod
     def _candidate_already_has_primary(
@@ -895,7 +953,7 @@ class BarcodeScanner:
 
         differences = [
             right - left
-            for left, right in zip(centers, centers[1:])
+            for left, right in pairwise(centers)
             if right > left
         ]
 
@@ -1044,6 +1102,59 @@ class BarcodeScanner:
         return detections
 
     @staticmethod
+    def _perspective_rectify(image: Image.Image) -> Image.Image:
+        """Attempt perspective correction by finding the largest quadrilateral.
+
+        Uses Canny edges + contour detection to find a barcode-like
+        quadrilateral, then warps it to a rectangle. Falls back to the
+        original image if no suitable quadrilateral is found.
+        """
+        arr = np.asarray(image)
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY) if len(arr.shape) == 3 else arr
+        edges = cv2.Canny(gray, 30, 200)
+        contours, _ = cv2.findContours(
+            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not contours:
+            return image
+
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+        for contour in contours:
+            peri = cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+            if len(approx) == 4 and cv2.contourArea(approx) > image.width * image.height * 0.1:
+                pts = approx.reshape(4, 2).astype(np.float32)
+                # Order: top-left, top-right, bottom-right, bottom-left.
+                s = pts.sum(axis=1)
+                rect = np.zeros((4, 2), dtype=np.float32)
+                rect[0] = pts[np.argmin(s)]
+                rect[2] = pts[np.argmax(s)]
+                diff = np.diff(pts, axis=1)
+                rect[1] = pts[np.argmin(diff)]
+                rect[3] = pts[np.argmax(diff)]
+
+                w = max(
+                    np.linalg.norm(rect[0] - rect[1]),
+                    np.linalg.norm(rect[2] - rect[3]),
+                )
+                h = max(
+                    np.linalg.norm(rect[0] - rect[3]),
+                    np.linalg.norm(rect[1] - rect[2]),
+                )
+                w, h = int(w), int(h)
+                if w < 20 or h < 10:
+                    continue
+                dst = np.array(
+                    [[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]],
+                    dtype=np.float32,
+                )
+                matrix = cv2.getPerspectiveTransform(rect, dst)
+                warped = cv2.warpPerspective(arr, matrix, (w, h))
+                return Image.fromarray(warped)
+
+        return image
+
+    @staticmethod
     def _prepare_image(
         image: Image.Image,
         *,
@@ -1147,6 +1258,20 @@ class BarcodeScanner:
                     threshold=1,
                 )
             )
+
+        if preprocessing == "perspective_clahe":
+            # Perspective correction + CLAHE. First rectify the barcode
+            # geometry, then enhance local contrast. Identified by the
+            # crop-level micro-benchmark as the top-performing transform
+            # for skewed/compressed barcode crops.
+            rectified = BarcodeScanner._perspective_rectify(prepared)
+            gray = ImageOps.grayscale(rectified)
+            gray_array = np.asarray(gray)
+            clahe = cv2.createCLAHE(
+                clipLimit=3.0,
+                tileGridSize=(8, 8),
+            )
+            return Image.fromarray(clahe.apply(gray_array))
 
         raise ValueError(f"Unknown preprocessing mode: {preprocessing}")
 

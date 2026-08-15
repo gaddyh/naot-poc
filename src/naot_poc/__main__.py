@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from naot_poc.domain.errors import InvalidInputError, NaotPocError, ScannerError
-from naot_poc.integrations.zxing import ZXingBarcodeScanner
+from naot_poc.integrations.zxing import MultiPassZXingScanner
 from naot_poc.runtime.context import RunContext
 from naot_poc.workflows.ingest_image.graph import build_ingest_image_graph
 
@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def _run(image_path: Path, context: RunContext) -> int:
-    graph = build_ingest_image_graph(ZXingBarcodeScanner())
+    graph = build_ingest_image_graph(MultiPassZXingScanner())
 
     try:
         result = await graph.ainvoke({"image_path": image_path})

@@ -123,6 +123,26 @@ def print_report(runs: list[EvaluationRun], metrics: AggregateMetrics) -> None:
         )
         if run.error:
             print(f"    ! {run.error}")
+        if run.extra:
+            print(f"    fp_values: {', '.join(run.extra)}")
+            initial = run.outputs.get("initial_barcodes", [])
+            added = run.outputs.get("recovery_added_barcodes", [])
+            print(f"    initial_barcodes: {initial}")
+            print(
+                f"    recovery_added: {[(b['value'], b['box']) for b in added]}"
+            )
+        diagnostics = run.outputs.get("recovery_diagnostics", [])
+        for diagnostic in diagnostics:
+            transforms = ", ".join(diagnostic["successful_transforms"]) or "none"
+            padding = diagnostic.get("crop_padding", "") or "none"
+            print(
+                f"    region {diagnostic['label_index']}: "
+                f"attempts={diagnostic['attempts']} "
+                f"recovered={diagnostic['recovered']} "
+                f"padding={padding} "
+                f"latency_ms={diagnostic['latency_ms']:.1f} "
+                f"transforms={transforms}"
+            )
 
     print()
     print(f"cases:                  {metrics.case_count}")
@@ -134,3 +154,8 @@ def print_report(runs: list[EvaluationRun], metrics: AggregateMetrics) -> None:
     )
     print(f"p50 latency:            {metrics.p50_latency_ms:.1f} ms")
     print(f"p95 latency:            {metrics.p95_latency_ms:.1f} ms")
+    print(f"audit_failure_rate:     {metrics.audit_failure_rate:.2%}")
+    print(
+        "targeted_recovery_success_rate: "
+        f"{metrics.targeted_recovery_success_rate:.2%}"
+    )
