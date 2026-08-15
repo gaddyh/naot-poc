@@ -233,7 +233,7 @@ async def test_execute_times_out_and_retries():
 
     retrying = sink.events[1]
     assert retrying.name == "operation.retrying"
-    assert retrying.attributes["error_type"] == "TimeoutError"
+    assert retrying.attributes["error_type"] == "OperationTimeoutError"
 
 
 async def test_execute_emits_started_and_succeeded_events():

@@ -6,7 +6,7 @@ class RetryableError(ExecutionError):
     """A transient failure that may succeed on a later attempt."""
 
 
-class TimeoutError(RetryableError):
+class OperationTimeoutError(RetryableError):
     """An operation exceeded its configured timeout. Retryable."""
 
 

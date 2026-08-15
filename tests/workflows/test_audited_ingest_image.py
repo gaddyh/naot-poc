@@ -297,3 +297,134 @@ async def test_reconciliation_overlap_prevents_false_missing():
     # The detection overlaps the label box (>15% of detection inside) → matched.
     assert result.matched_count == 1
     assert len(result.missing_regions) == 0
+
+
+async def test_full_audited_flow_matched_missing_recovered_and_deduped():
+    """End-to-end: parallel_scan_audit → reconcile → targeted_recovery → merge.
+
+    Three labels: one matched by scan, one missing and recovered, one missing
+    and not recovered. Verifies the complete node sequence, conditional routing,
+    recovery diagnostics, and merge deduplication in a single test.
+    """
+    events: list[str] = []
+
+    # Label 1: matched (detection center inside label box)
+    # Label 2: missing, recoverable (recovery returns a new barcode)
+    # Label 3: missing, not recoverable (recovery returns empty)
+    initial_scan = ScanResult(
+        barcodes=(
+            DetectedBarcode(
+                value="7297500243423",
+                format=BarcodeFormat.EAN13,
+                bounding_box=BoundingBox(65, 65, 75, 75),  # inside label 1
+            ),
+        ),
+        image_width=200,
+        image_height=200,
+    )
+
+    class MultiRegionScanner:
+        def __init__(self):
+            self.recovery_calls = 0
+
+        def scan(self, image_path: Path) -> ScanResult:
+            events.append("scan-start")
+            return initial_scan
+
+        def recover_region_diagnostics(self, image_path: Path, region: BoundingBox):
+            self.recovery_calls += 1
+            events.append(f"recover-{self.recovery_calls}")
+            # Second recovery call (region 2) succeeds; third (region 3) fails.
+            if self.recovery_calls == 1:
+                # Region 2 — recover with a new barcode
+                return SimpleNamespace(
+                    result=ScanResult(
+                        barcodes=(
+                            DetectedBarcode(
+                                value="7297500243447",
+                                format=BarcodeFormat.EAN13,
+                                bounding_box=BoundingBox(130, 130, 140, 140),
+                            ),
+                        ),
+                        image_width=200,
+                        image_height=200,
+                    ),
+                    attempts=(
+                        SimpleNamespace(
+                            rotation=0, scale=2.0, preprocessing="clahe",
+                            inverted=False, values=("7297500243447",),
+                        ),
+                    ),
+                )
+            # Region 3 — no barcode found
+            return SimpleNamespace(
+                result=ScanResult(barcodes=(), image_width=200, image_height=200),
+                attempts=(),
+            )
+
+    audit = SimpleNamespace(
+        labels=[
+            # Label 1: matched by initial scan
+            SimpleNamespace(
+                label_index=1,
+                label_bbox=SimpleNamespace(x1=60, y1=60, x2=100, y2=100, width=40, height=40),
+                barcode_bbox=None,
+                status="clear",
+                confidence="high",
+            ),
+            # Label 2: missing, recoverable
+            SimpleNamespace(
+                label_index=2,
+                label_bbox=SimpleNamespace(x1=120, y1=120, x2=160, y2=160, width=40, height=40),
+                barcode_bbox=None,
+                status="clear",
+                confidence="high",
+            ),
+            # Label 3: missing, not recoverable
+            SimpleNamespace(
+                label_index=3,
+                label_bbox=SimpleNamespace(x1=10, y1=10, x2=40, y2=40, width=30, height=30),
+                barcode_bbox=None,
+                status="clear",
+                confidence="high",
+            ),
+        ]
+    )
+
+    scanner = MultiRegionScanner()
+    graph = build_audited_ingest_image_graph(
+        scanner,
+        FakeAuditor(audit, events),
+    )
+
+    result = await graph.ainvoke({"image_path": Path("image.jpeg")})
+
+    # parallel_scan_audit ran both scan and audit
+    assert "scan-start" in events
+    assert "audit-start" in events
+
+    # reconcile identified 2 missing regions (labels 2 and 3)
+    # targeted_recovery attempted both
+    assert result["recovery_attempts"] == 2
+    assert result["recovery_successes"] == 1
+
+    # merge: initial barcode + recovered barcode = 2 total (deduped)
+    assert len(result["scan_result"].barcodes) == 2
+    values = {b.value for b in result["scan_result"].barcodes}
+    assert "7297500243423" in values
+    assert "7297500243447" in values
+
+    # Diagnostics: 2 regions attempted
+    diags = result["recovery_diagnostics"]
+    assert len(diags) == 2
+    recovered = [d for d in diags if d.recovered]
+    failed = [d for d in diags if not d.recovered]
+    assert len(recovered) == 1
+    assert len(failed) == 1
+    assert recovered[0].recovered_values == ("7297500243447",)
+    assert failed[0].recovered is False
+
+    # initial_barcodes and recovery_added_barcodes should be populated
+    assert len(result["initial_barcodes"]) == 1
+    assert len(result["recovery_added_barcodes"]) == 1
+    assert result["recovery_added_barcodes"][0].value == "7297500243447"

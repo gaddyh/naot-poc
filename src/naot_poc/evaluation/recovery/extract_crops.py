@@ -136,9 +136,9 @@ async def _extract(
             case_id = f"{slug}_region_{label_index}"
             crop_file = f"crops/{case_id}.png"
 
-            # Save the crop at the original (unpadded) box for the micro-benchmark.
-            # The original_box is not in diagnostics; we save the padded box crop
-            # since that's what recovery actually decoded from.
+            # Save the crop at the padded box that recovery actually decoded from.
+            # The original (unpadded) Gemini box is not included in diagnostics;
+            # the padded box is the best proxy for what the decoder saw.
             _save_crop(image_path, box, output_dir / crop_file)
 
             cases.append(

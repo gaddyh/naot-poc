@@ -51,7 +51,8 @@ class GeminiSpatialAuditor:
         if self._cache_dir is None:
             return None
         resolved = Path(image_path).resolve()
+        stat = resolved.stat()
         key = hashlib.sha256(
-            f"{resolved}:{resolved.stat().st_size}".encode()
+            f"{resolved}:{stat.st_size}:{stat.st_mtime}".encode()
         ).hexdigest()[:16]
         return self._cache_dir / f"{resolved.stem}_{key}.json"

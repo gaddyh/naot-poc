@@ -9,9 +9,9 @@ from naot_poc.domain.errors import NaotPocError
 from naot_poc.runtime.context import RunContext
 from naot_poc.runtime.errors import (
     ExecutionError,
+    OperationTimeoutError,
     PermanentError,
     RetryableError,
-    TimeoutError,
 )
 from naot_poc.runtime.events import NO_OP_SINK, EventSink, RuntimeEvent
 from naot_poc.runtime.idempotency import (
@@ -136,7 +136,7 @@ async def _run_with_retries(
             )
 
         except asyncio.TimeoutError as exc:
-            wrapped = TimeoutError(f"Operation timed out during run {context.run_id}")
+            wrapped = OperationTimeoutError(f"Operation timed out during run {context.run_id}")
 
             if attempt >= policy.max_attempts:
                 duration_ms = (perf_counter() - start) * 1000

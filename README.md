@@ -105,7 +105,7 @@ naot-poc/
         │   ├── policy.py           # ExecutionPolicy
         │   ├── events.py           # RuntimeEvent, EventSink protocol, NoOpEventSink
         │   ├── idempotency.py      # IdempotencyStore, InMemoryIdempotencyStore
-        │   └── errors.py           # RetryableError, PermanentError, TimeoutError
+        │   └── errors.py           # RetryableError, PermanentError, OperationTimeoutError
         ├── observability/
         │   └── sinks.py            # LoggingEventSink, InMemoryEventSink
         └── evaluation/
@@ -180,7 +180,7 @@ When a key is supplied:
   `RetryableError`.
 
 Cache scope is driven by the runtime's `ExecutionError` hierarchy
-(`PermanentError` → cache, `RetryableError` / `TimeoutError` → release), not
+(`PermanentError` → cache, `RetryableError` / `OperationTimeoutError` → release), not
 by domain error type. `operation.started` is emitted only when actual
 execution begins (on the owner path), never on cache hits or while waiting.
 
@@ -394,8 +394,8 @@ target adds Gemini spatial audit + targeted recovery.
 | `complete_image_rate`           | 33.33%   | **44.44%**  |
 | `total_false_positives`         | 1        | 3           |
 | matched / expected              | 41 / 74  | **55 / 74** |
-| `targeted_recovery_success_rate`| —        | 50.00%      |
-| `p50_latency_ms`                | 1008.4   | 3929.4      |
+| `targeted_recovery_success_rate`| —        | 48.48%      |
+| `p50_latency_ms`                | 1034.0   | 4193.2      |
 
 Per-image results (matched / expected, false positives):
 
